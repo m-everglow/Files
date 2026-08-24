@@ -1342,6 +1342,358 @@ def generate_mask_fn_vectorized(q_seq_list, k_seq_list, bs, max_q_len, max_k_len
     return mask_fn
 
 
+# ---------------------------------------------------------------------------
+# Forward-save / Backward-load helpers
+# ---------------------------------------------------------------------------
+# Run the forward pass once, persist all forward outputs plus every input
+# needed by backward; later load that file and run *only* the backward pass.
+
+def _prepare_inputs(idx, bs, num_head, head_dim, seqlen):
+    """Load q/k/v/do + aux tensors (CPU) and collect every scalar ctx attribute
+    that ``FlashAttentionFunc.forward`` stashes on ctx."""
+    dtype = torch.bfloat16
+    q_seq_list = [0] + [seqlen] * 8
+    k_seq_list = [0] + [seqlen] * 8
+
+    q_len = sum(q_seq_list)
+    k_len = sum(k_seq_list)
+    max_seqlen_q = max(q_seq_list)
+    max_seqlen_k = max(k_seq_list)
+
+    data_root = os.environ.get(
+        "FA_TEST_DATA_ROOT",
+        "/data/j00808997/opentile/fa_bwd/new",
+    )
+    root_dir = os.path.join(
+        os.path.abspath(data_root),
+        f"dump1_case{idx}",
+    )
+
+    q = torch.load(f"{root_dir}/q.pt", map_location=torch.device("cpu")).to(dtype)
+    k = torch.load(f"{root_dir}/k.pt", map_location=torch.device("cpu")).to(dtype)
+    v = torch.load(f"{root_dir}/v.pt", map_location=torch.device("cpu")).to(dtype)
+    do = torch.load(f"{root_dir}/do.pt", map_location=torch.device("cpu")).to(dtype)
+
+    q_attn_arg = torch.zeros(q_len, dtype=torch.int32, device="cpu")
+    k_attn_arg = torch.zeros(k_len, dtype=torch.int32, device="cpu")
+
+    cu_seqlens_q = np.cumsum(q_seq_list).tolist()
+    cu_seqlens_k = np.cumsum(k_seq_list).tolist()
+    cu_seqlens_q = torch.tensor(cu_seqlens_q, dtype=torch.int32, device="cpu")
+    cu_seqlens_k = torch.tensor(cu_seqlens_k, dtype=torch.int32, device="cpu")
+
+    mask_tensor = generate_mask_fn_vectorized(
+        q_seq_list[1:], k_seq_list[1:], bs, max_seqlen_q, max_seqlen_k,
+        q_attn_arg, k_attn_arg,
+    )
+
+    return {
+        "q": q,
+        "k": k,
+        "v": v,
+        "do": do,
+        "q_attn_arg": q_attn_arg,
+        "k_attn_arg": k_attn_arg,
+        "mask_tensor": mask_tensor,
+        "cu_seqlens_q": cu_seqlens_q,
+        "cu_seqlens_k": cu_seqlens_k,
+        "scale": 1.0 / (head_dim ** 0.5),
+        "max_seqlen_q": max_seqlen_q,
+        "max_seqlen_k": max_seqlen_k,
+        "q_head": q.shape[1],
+        "kv_head": v.shape[1],
+        "qk_dim": q.shape[2],
+        "v_dim": v.shape[2],
+        "k_len": k_len,
+        "batch_size": cu_seqlens_q.shape[0] - 1,
+        "dtype": (19 if dtype == torch.float16 else 14),
+        "mask_fn": 1,
+        "sparse_opt": False,
+        "root_dir": root_dir,
+    }
+
+
+def _fwd_state_dir(idx):
+    """Directory for the persisted forward state of case ``idx``.
+
+    Defaults to ``/data/m/f`` but can be overridden via ``FA_FWD_STATE_ROOT``.
+    Note this is independent of ``FA_TEST_DATA_ROOT`` (which controls where
+    q/k/v/do live) so the fwd state can live on a different disk.
+    """
+    base = os.environ.get("FA_FWD_STATE_ROOT", "/data/m/f")
+    return os.path.join(os.path.abspath(base), f"dump1_case{idx}")
+
+
+def _fwd_state_path(idx):
+    return os.path.join(_fwd_state_dir(idx), f"fwd_state_case{idx}.pt")
+
+
+def _save_fwd_state(save_path, inputs, o, l):
+    """Persist forward state to a single ``.pt`` file."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    payload = {**inputs, "o": o.detach().cpu(), "l": l.detach().cpu()}
+    torch.save(payload, save_path)
+    print(f"[fwd] saved -> {save_path}  (o={payload['o'].shape}, l={payload['l'].shape})")
+
+
+def _load_fwd_state(load_path):
+    print(f"[bwd] loading <- {load_path}")
+    return torch.load(load_path, map_location="cpu")
+
+
+def _run_fa_forward_save(idx, bs, num_head, head_dim, seqlen):
+    """Phase 1: run the forward kernel directly, save state to disk."""
+    DEVICE = torch.device("npu")
+    inputs = _prepare_inputs(idx, bs, num_head, head_dim, seqlen)
+
+    q = inputs["q"].to(DEVICE)
+    k = inputs["k"].to(DEVICE)
+    v = inputs["v"].to(DEVICE)
+    q_attn_arg = inputs["q_attn_arg"].to(DEVICE)
+    k_attn_arg = inputs["k_attn_arg"].to(DEVICE)
+    mask_tensor = inputs["mask_tensor"].to(DEVICE)
+    cu_seqlens_q = inputs["cu_seqlens_q"].to(DEVICE)
+    cu_seqlens_k = inputs["cu_seqlens_k"].to(DEVICE)
+
+    o = q.new_empty(q.shape[0], q.shape[1], inputs["v_dim"])
+    l = q.new_empty(q.shape[0], q.shape[1], dtype=torch.float32)
+
+    NUM_CORES = AICORE_NUM
+    fwd_kernel[(NUM_CORES,)](
+        q, k, v, o, l,
+        q_attn_arg, k_attn_arg, mask_tensor,
+        cu_seqlens_q, cu_seqlens_k,
+        inputs["q_head"], inputs["kv_head"], inputs["scale"],
+        BLOCK_M=64, BLOCK_N=32,
+        QK_DIM=inputs["qk_dim"], V_DIM=inputs["v_dim"],
+        MASK_FN=inputs["mask_fn"], SPARSE_OPT=inputs["sparse_opt"],
+        DTYPE=inputs["dtype"],
+        AICORE_NUM=NUM_CORES,
+        MAX_Q_LEN=inputs["max_seqlen_q"], MAX_K_LEN=inputs["max_seqlen_k"],
+        BATCH_SIZE=inputs["batch_size"],
+    )
+    torch.npu.synchronize()
+
+    _save_fwd_state(_fwd_state_path(idx), inputs, o, l)
+
+
+def _make_assert_bwd(idx, root_dir, rtol=5e-3, atol=5e-3):
+    """Build an ``assert_output`` closure (mirrors the one in ``_run_fa_case``)
+    so the backward-only path can compare against the same golden files."""
+
+    def assert_output(name, actual, filename,
+                      output_atol=atol, allow_one_ulp_exception=False):
+        golden = torch.load(
+            os.path.join(root_dir, filename), map_location="cpu"
+        )
+        actual_cpu = actual.detach().cpu().contiguous()
+        golden_source_cpu = golden.detach().cpu().contiguous()
+        golden_cpu = golden_source_cpu.to(torch.bfloat16).contiguous()
+        actual_f32 = actual_cpu.float()
+        golden_f32 = golden_cpu.float()
+        close = torch.isclose(
+            actual_f32, golden_f32,
+            rtol=rtol, atol=output_atol, equal_nan=False,
+        )
+        allow_one_ulp = False
+        if not close.all().item():
+            abs_error = (actual_f32 - golden_f32).abs()
+            tolerance = output_atol + rtol * golden_f32.abs()
+            error_ratio = torch.nan_to_num(
+                abs_error / tolerance,
+                nan=float("inf"), posinf=float("inf"),
+            ).masked_fill(close, -1.0)
+            bad_count = int((~close).sum().item())
+            top_count = min(bad_count, 16)
+            worst_flat_indices = torch.topk(
+                error_ratio.flatten(), k=top_count,
+            ).indices.tolist()
+            print(
+                f"\n[case{idx}][{name}] mismatch: "
+                f"{bad_count}/{actual_f32.numel()}, "
+                f"rtol={rtol}, atol={output_atol}"
+            )
+            print(
+                f"[case{idx}][{name}] dtype: "
+                f"actual={actual_cpu.dtype}, "
+                f"gold_source={golden_source_cpu.dtype}, "
+                f"gold_compare={golden_cpu.dtype}"
+            )
+            if (
+                allow_one_ulp_exception
+                and actual_cpu.dtype == torch.bfloat16
+                and golden_cpu.dtype == torch.bfloat16
+            ):
+                actual_bits = (
+                    actual_cpu.view(torch.int16).to(torch.int32) & 0xffff
+                )
+                golden_bits = (
+                    golden_cpu.view(torch.int16).to(torch.int32) & 0xffff
+                )
+                actual_ordered = torch.where(
+                    (actual_bits & 0x8000) != 0,
+                    (~actual_bits) & 0xffff,
+                    actual_bits | 0x8000,
+                )
+                golden_ordered = torch.where(
+                    (golden_bits & 0x8000) != 0,
+                    (~golden_bits) & 0xffff,
+                    golden_bits | 0x8000,
+                )
+                ulp_distance = (actual_ordered - golden_ordered).abs()
+                bad_ulp_distance = ulp_distance[~close]
+                allow_one_ulp = (
+                    bad_count == 1
+                    and bool((bad_ulp_distance <= 2).all().item())
+                )
+                print(
+                    f"[case{idx}][{name}] one-ULP exception: "
+                    f"bad_count={bad_count}, "
+                    f"bad_ulp={bad_ulp_distance.tolist()}, "
+                    f"allowed={allow_one_ulp}"
+                )
+            for rank, flat_index in enumerate(worst_flat_indices, 1):
+                index = tuple(
+                    int(i) for i in np.unravel_index(
+                        flat_index, tuple(actual_f32.shape),
+                    )
+                )
+                actual_value = actual_f32[index].item()
+                golden_value = golden_f32[index].item()
+                golden_source_value = golden_source_cpu[index].float().item()
+                difference = abs_error[index].item()
+                allowed = tolerance[index].item()
+                ratio = error_ratio[index].item()
+                print(
+                    f"[case{idx}][{name}] #{rank} idx={index}: "
+                    f"actual={actual_value:.10g}, "
+                    f"gold={golden_value:.10g}, "
+                    f"gold_source={golden_source_value:.10g}, "
+                    f"abs_diff={difference:.10g}, "
+                    f"tolerance={allowed:.10g}, "
+                    f"error/tol={ratio:.6f}"
+                )
+                if (
+                    actual_cpu.dtype == torch.bfloat16
+                    and golden_cpu.dtype == torch.bfloat16
+                ):
+                    actual_bits = (
+                        int(actual_cpu.view(torch.int16)[index].item())
+                        & 0xffff
+                    )
+                    golden_bits = (
+                        int(golden_cpu.view(torch.int16)[index].item())
+                        & 0xffff
+                    )
+                    print(
+                        f"[case{idx}][{name}] #{rank} BF16 bits: "
+                        f"actual=0x{actual_bits:04x}, "
+                        f"gold=0x{golden_bits:04x}"
+                    )
+        assert close.all().item() or allow_one_ulp, f"{name} output mismatch"
+
+    return assert_output
+
+
+def _run_fa_backward_load(idx, bs, num_head, head_dim, seqlen):
+    """Phase 2: load persisted forward state, run *only* the backward kernels."""
+    DEVICE = torch.device("npu")
+
+    inputs = _prepare_inputs(idx, bs, num_head, head_dim, seqlen)
+    state = _load_fwd_state(_fwd_state_path(idx))
+
+    q = state["q"].to(DEVICE)
+    k = state["k"].to(DEVICE)
+    v = state["v"].to(DEVICE)
+    o = state["o"].to(DEVICE)
+    l = state["l"].to(DEVICE)
+    do = state["do"].to(DEVICE)
+    q_attn_arg = state["q_attn_arg"].to(DEVICE)
+    k_attn_arg = state["k_attn_arg"].to(DEVICE)
+    mask_tensor = state["mask_tensor"].to(DEVICE)
+    cu_seqlens_q = state["cu_seqlens_q"].to(DEVICE)
+    cu_seqlens_k = state["cu_seqlens_k"].to(DEVICE)
+
+    dq = torch.zeros(q.shape, dtype=torch.float32, device=q.device)
+    dk = k.new_empty(state["k_len"], state["q_head"], state["qk_dim"])
+    dv = v.new_empty(state["k_len"], state["q_head"], state["v_dim"])
+    d = torch.empty_like(l)
+
+    # ---- bwd preprocess ----
+    if state["max_seqlen_q"] * state["batch_size"] == q.shape[0]:
+        if state["v_dim"] > 64:
+            BLOCK_SIZE = 16
+        else:
+            BLOCK_SIZE = 32
+        NUM_CORES = VECTOR_NUM
+        TASK_SIZE = triton.cdiv(
+            state["max_seqlen_q"] * state["batch_size"], VECTOR_NUM,
+        )
+        if TASK_SIZE < BLOCK_SIZE:
+            NUM_CORES = triton.cdiv(
+                state["max_seqlen_q"] * state["batch_size"], BLOCK_SIZE,
+            )
+            TASK_SIZE = BLOCK_SIZE
+        NUM_BLOCKS = triton.cdiv(TASK_SIZE, BLOCK_SIZE)
+        bwd_preprocess_ifmn[(NUM_CORES,)](
+            o_ptr=o, do_ptr=do, d_ptr=d,
+            Q_HEAD_NUM=state["q_head"],
+            V_DIM=state["v_dim"],
+            DTYPE=state["dtype"],
+            TASK_SIZE=TASK_SIZE,
+            NUM_BLOCKS=NUM_BLOCKS,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+    else:
+        if state["v_dim"] > 64:
+            BLOCK_M = 128
+        else:
+            BLOCK_M = 256
+        NUM_CORES = VECTOR_NUM
+        NUM_BLOCKS_M = triton.cdiv(state["max_seqlen_q"], BLOCK_M)
+        NUM_BLOCKS = NUM_BLOCKS_M * state["q_head"] * state["batch_size"]
+        bwd_preprocess[(NUM_CORES,)](
+            o, do, d, cu_seqlens_q, state["q_head"],
+            V_DIM=state["v_dim"], DTYPE=state["dtype"],
+            BLOCK_M=BLOCK_M,
+            NUM_BLOCKS_M=NUM_BLOCKS_M,
+            NUM_BLOCKS=NUM_BLOCKS, NUM_CORES=NUM_CORES,
+        )
+
+    # ---- fused bwd qkv ----
+    NUM_CORES = AICORE_NUM
+    bwd_qkv_kernel[(NUM_CORES,)](
+        q, k, v, dq, dk, dv,
+        do, l, d,
+        q_attn_arg, k_attn_arg,
+        mask_tensor,
+        cu_seqlens_q, cu_seqlens_k,
+        state["batch_size"],
+        state["max_seqlen_q"], state["max_seqlen_k"],
+        state["q_head"], state["kv_head"],
+        state["scale"],
+        QK_DIM=state["qk_dim"], V_DIM=state["v_dim"],
+        MASK_FN=state["mask_fn"], SPARSE_OPT=state["sparse_opt"],
+        DTYPE=state["dtype"],
+        NUM_CORES=NUM_CORES, BLOCK_M=64, BLOCK_N=64,
+    )
+    dq = dq.to(q.dtype)
+
+    head_group = state["q_head"] // state["kv_head"]
+    if head_group > 1:
+        dk = dk.reshape(
+            state["k_len"], state["kv_head"], head_group, state["qk_dim"],
+        ).sum(2)
+        dv = dv.reshape(
+            state["k_len"], state["kv_head"], head_group, state["v_dim"],
+        ).sum(2)
+
+    assert_output = _make_assert_bwd(idx, inputs["root_dir"])
+    assert_output("dq", dq, "dq.pt")
+    assert_output("dk", dk, "dk.pt", allow_one_ulp_exception=True)
+    assert_output("dv", dv, "dv.pt")
+
+
 def _run_fa_case(idx, bs, num_head, head_dim, seqlen):
     dtype = torch.bfloat16
     DEVICE = torch.device("npu")
@@ -1556,3 +1908,27 @@ def _run_fa_case(idx, bs, num_head, head_dim, seqlen):
 def test_fa_forward_backward(idx, bs, num_head, head_dim, seqlen):
     """Run the original BF16 FA forward/backward numerical comparison."""
     _run_fa_case(idx, bs, num_head, head_dim, seqlen)
+
+
+@pytest.mark.parametrize(
+    "idx,bs,num_head,head_dim,seqlen",
+    [
+        (1, 8, 8, 64, 2432),
+    ],
+)
+def test_fa_save_forward(idx, bs, num_head, head_dim, seqlen):
+    """Phase 1: run the forward pass only and persist its outputs (o, l)
+    plus every input needed by the backward pass."""
+    _run_fa_forward_save(idx, bs, num_head, head_dim, seqlen)
+
+
+@pytest.mark.parametrize(
+    "idx,bs,num_head,head_dim,seqlen",
+    [
+        (1, 8, 8, 64, 2432),
+    ],
+)
+def test_fa_load_backward(idx, bs, num_head, head_dim, seqlen):
+    """Phase 2: load the persisted forward state and run only the backward
+    kernels, asserting dq/dk/dv against the golden files."""
+    _run_fa_backward_load(idx, bs, num_head, head_dim, seqlen)
