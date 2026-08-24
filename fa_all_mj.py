@@ -1428,6 +1428,11 @@ def _fwd_state_path(idx):
     return os.path.join(_fwd_state_dir(idx), f"fwd_state_case{idx}.pt")
 
 
+def _preprocess_state_path(idx):
+    """Where ``bwd_preprocess_ifmn``'s output ``d`` is persisted."""
+    return os.path.join(_fwd_state_dir(idx), f"preprocess_d_case{idx}.pt")
+
+
 def _save_fwd_state(save_path, inputs, o, l):
     """Persist forward state to a single ``.pt`` file."""
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -1595,6 +1600,65 @@ def _make_assert_bwd(idx, root_dir, rtol=5e-3, atol=5e-3):
     return assert_output
 
 
+def _run_fa_preprocess_save(idx, bs, num_head, head_dim, seqlen):
+    """Phase 1.5: load the persisted forward state, run
+    ``bwd_preprocess_ifmn`` once, persist its output ``d``.
+
+    Only valid when ``max_seqlen_q * batch_size == q.shape[0]`` (the equal-len
+    path that uses ``bwd_preprocess_ifmn``). For the unequal-len path the
+    preprocess is still recomputed inline in ``_run_fa_backward_load``.
+    """
+    DEVICE = torch.device("npu")
+
+    inputs = _prepare_inputs(idx, bs, num_head, head_dim, seqlen)
+    state = _load_fwd_state(_fwd_state_path(idx))
+
+    o = state["o"].to(DEVICE)
+    do = state["do"].to(DEVICE)
+
+    total = state["max_seqlen_q"] * state["batch_size"]
+    if total != state["q"].shape[0]:
+        raise RuntimeError(
+            f"[case{idx}] preprocess_ifmn requires equal-len shape "
+            f"(max_seqlen_q*batch_size==q.shape[0]); got total={total}, "
+            f"q.shape[0]={state['q'].shape[0]}"
+        )
+
+    if state["v_dim"] > 64:
+        BLOCK_SIZE = 16
+    else:
+        BLOCK_SIZE = 32
+    NUM_CORES = VECTOR_NUM
+    TASK_SIZE = triton.cdiv(total, VECTOR_NUM)
+    if TASK_SIZE < BLOCK_SIZE:
+        NUM_CORES = triton.cdiv(total, BLOCK_SIZE)
+        TASK_SIZE = BLOCK_SIZE
+    NUM_BLOCKS = triton.cdiv(TASK_SIZE, BLOCK_SIZE)
+
+    d = torch.empty(
+        total, state["q_head"], dtype=torch.float32, device=DEVICE,
+    )
+
+    bwd_preprocess_ifmn[(NUM_CORES,)](
+        o_ptr=o, do_ptr=do, d_ptr=d,
+        Q_HEAD_NUM=state["q_head"],
+        V_DIM=state["v_dim"],
+        DTYPE=state["dtype"],
+        TASK_SIZE=TASK_SIZE,
+        NUM_BLOCKS=NUM_BLOCKS,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    torch.npu.synchronize()
+
+    save_path = _preprocess_state_path(idx)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save({"d": d.detach().cpu()}, save_path)
+    print(
+        f"[preprocess] saved -> {save_path}  "
+        f"(d={d.shape}, dtype={d.dtype})"
+    )
+
+
 def _run_fa_backward_load(idx, bs, num_head, head_dim, seqlen):
     """Phase 2: load persisted forward state, run *only* the backward kernels."""
     DEVICE = torch.device("npu")
@@ -1621,29 +1685,16 @@ def _run_fa_backward_load(idx, bs, num_head, head_dim, seqlen):
 
     # ---- bwd preprocess ----
     if state["max_seqlen_q"] * state["batch_size"] == q.shape[0]:
-        if state["v_dim"] > 64:
-            BLOCK_SIZE = 16
-        else:
-            BLOCK_SIZE = 32
-        NUM_CORES = VECTOR_NUM
-        TASK_SIZE = triton.cdiv(
-            state["max_seqlen_q"] * state["batch_size"], VECTOR_NUM,
-        )
-        if TASK_SIZE < BLOCK_SIZE:
-            NUM_CORES = triton.cdiv(
-                state["max_seqlen_q"] * state["batch_size"], BLOCK_SIZE,
+        # Load d produced by a previous _run_fa_preprocess_save() run.
+        prep_path = _preprocess_state_path(idx)
+        if not os.path.isfile(prep_path):
+            raise FileNotFoundError(
+                f"[case{idx}] preprocess output not found at {prep_path}; "
+                f"run test_fa_save_preprocess first."
             )
-            TASK_SIZE = BLOCK_SIZE
-        NUM_BLOCKS = triton.cdiv(TASK_SIZE, BLOCK_SIZE)
-        bwd_preprocess_ifmn[(NUM_CORES,)](
-            o_ptr=o, do_ptr=do, d_ptr=d,
-            Q_HEAD_NUM=state["q_head"],
-            V_DIM=state["v_dim"],
-            DTYPE=state["dtype"],
-            TASK_SIZE=TASK_SIZE,
-            NUM_BLOCKS=NUM_BLOCKS,
-            BLOCK_SIZE=BLOCK_SIZE,
-        )
+        print(f"[bwd] loading preprocess d <- {prep_path}")
+        d_loaded = torch.load(prep_path, map_location="cpu")
+        d.copy_(d_loaded["d"].to(d.dtype).to(d.device))
     else:
         if state["v_dim"] > 64:
             BLOCK_M = 128
@@ -1932,3 +1983,16 @@ def test_fa_load_backward(idx, bs, num_head, head_dim, seqlen):
     """Phase 2: load the persisted forward state and run only the backward
     kernels, asserting dq/dk/dv against the golden files."""
     _run_fa_backward_load(idx, bs, num_head, head_dim, seqlen)
+
+
+@pytest.mark.parametrize(
+    "idx,bs,num_head,head_dim,seqlen",
+    [
+        (1, 8, 8, 64, 2432),
+    ],
+)
+def test_fa_save_preprocess(idx, bs, num_head, head_dim, seqlen):
+    """Phase 1.5: load the persisted forward state, run only
+    ``bwd_preprocess_ifmn``, and persist its output ``d`` so the backward-load
+    path can consume it without recomputing."""
+    _run_fa_preprocess_save(idx, bs, num_head, head_dim, seqlen)
