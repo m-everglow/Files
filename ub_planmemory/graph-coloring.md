@@ -15,9 +15,6 @@
 
   差别用一句话说：first-fit 是"先来先占"，graph-coloring 是"全局最优化"。
 
-3. 能装而 first-fit 装不下的 case
-bishengir/test/Dialect/HIVM/RegBase/plan-memory-coloring-succeeds-firstfit-fails.mlir
-
 4. 更快、更准的诊断
 
   ┌──────────────────────────────────────────┬────────────────────────────────────────┬──────────────────────────────────────────────┐
