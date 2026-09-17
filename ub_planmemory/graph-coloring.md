@@ -1,3 +1,45 @@
+# 0917
+目标：
+1、去掉kPlanRetryCount = 20的重试机制
+2、利用全局视野，达到相比first-fit更优的分配
+3、考虑pipe conflict，而不是一味收紧placement：尽量不阻塞性能（插核内同步在planmemory之后）
+
+方案：graph-coloring替换first-fit + 加 sync-aware pre-pass 把 pipe conflict 分类为 HARD/SOFT
+
+
+1、kPlanRetryCount = 20 -> randomSeed 不影响 lifetime，影响的是 slot 复用选择 -> first-fit/graph-color均可能会受影响 -> fa bwd不存在该场景
+  链路完整：
+
+  randomSeed
+    ↓ shuffle 改变 push_back 顺序
+  genKillMap[op].kill（顺序变化，set 不变）
+    ↓ BuildInplaceList 内层遍历 kill 列表，break 在第一个匹配的
+  inplaceList（内容可能不同）
+    ↓ MergeInplaceSE 合并哪些 SE
+  mergedChildren（不同）
+    ↓ first-fit outline 扫描
+  最终 peak（不同）
+
+  理论链能成立的前提是：某个 kill 点有 ≥2 个候选 genBuffer 可与它形成 inplace 配对。这要求 IR 里出现类似这样的结构：
+
+  %A = alloc A  (10 bits, lifetime [0, 5])
+  %B = alloc B  (10 bits, lifetime [0, 5])
+  opX reads %A, writes %C
+  opX reads %B, writes %D
+  // 在 opX 处 %A 和 %B 都能被复用给 %C 或 %D
+
+  这种"对称候选"在 IR 里并不常见。
+
+2、first-fit分配地址的时候存在多档降级处理 -> graph-color需不需要同样的SPEC_LEVEL_3/2/1/0这4档处理？-> 目前graph-color只有严格的level-3/level-0两档（插核内同步在planmemory之后，会影响性能）
+    buffer1 spec_level_3
+    buffer2 spec_level_3
+    buffer3 spec_level_3->2->1->0
+
+
+3、应该尽量不复用打满硬件空间 -> 而不是减少峰值空间占用
+
+
+
 # graph-coloring的优势
  1. 确定性：一次 attempt vs 20 次 seed retry
 
