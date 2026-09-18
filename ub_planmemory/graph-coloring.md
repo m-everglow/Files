@@ -30,6 +30,13 @@
   │ L0     │ sync-aware 更严（多 block HARD）      │ 删   │
   └────────┴───────────────────────────────────────┴──────┘
 
+  ▎ spec_level 是「档位 ladder」（粗粒度，全局降档）
+  ▎ sync-aware 是「conflict 分类」（细粒度，per-pair 静态） 
+  ▎
+  ▎ sync-aware 落在 L0 和 L2 之间，不等于任何一个。
+  ▎ 实现上需要新增 pre-pass + 改 conflict query，不是改 ladder 数字。
+  ▎ 引入 sync-aware 后，L0/L2/L3三个档都变冗余，只剩 L1（multi-buffer）保留。
+
 1、kPlanRetryCount = 20 -> randomSeed 不影响 lifetime，影响的是 slot 复用选择 -> first-fit/graph-color均可能会受影响 -> fa bwd不存在该场景
   链路完整：
 
