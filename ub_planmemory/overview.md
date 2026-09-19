@@ -1,35 +1,55 @@
-# 为什么需要attempt
-打乱候选 buffer 的处理顺序，避免当前内存规划算法因为“贪心顺序”导致某些本来可行的布局失败。
-    attempt0: live = {A, B, C}
-    attempt1: live = {C, A, B}
+# attempt
+attempt影响：
+    genKillMap[op].gen  中的顺序
+    genKillMap[op].kill 中的顺序
 
-主要影响链路是：
-    live buffer 顺序
-        ↓
-    genKillMap 中 gen/kill 的顺序
-        ↓
-    inplace pair 的选择顺序
-        ↓
-    StorageEntry 的生成/合并顺序
-        ↓
-    outline 中的首次可用地址选择
-        ↓
-    最终是否能放入有限 UB/L1/L0C 空间
+示例: 
+    UB SIZE=192KB
+    A: 96 KB
+    B: 96 KB
+    X: 96 KB
+    Y: 96 KB
 
-为什么不能只尝试一次？
-    因为当前 planner 有这些特点：
-    - StorageEntry 主要按遍历顺序进入规划；
-    - 地址分配是从 outline 中寻找第一个满足条件的区间；
-    - inplace pair 选择存在顺序依赖；
-    - multibuffer slot 需要成组匹配；
-    - pipeline 冲突会使某些地址选择失效；
-    - 多级 speculative plan 和 rollback 仍然无法覆盖所有排列组合。
+inplace候选: 
+    X -> A 或 B
+    Y -> A
+
+1、差的attempt: inplace列表[X, Y]
+    X -> A
+    Y 无法 inplace
+    B 独立
+
+物理Entry: -> 若生命周期无法复用，则规划失败
+    XA: 96 KB
+    Y:  96 KB
+    B:  96 KB
+
+2、好的attempt: inplace列表[Y, X]
+    Y -> A
+    X -> B
+
+物理Entry: -> TOTAL SIZE<=192KB, 规划成功
+    YA: 96 KB
+    XB: 96 KB
 
 # UB buffer类型
+memoryUnique buffer
+    ↓
+DMA touched buffer
+    ↓
+普通 buffer
+    ↓
+scalar pipeline buffer
 
+
+# StorageEntry
+经过 inplace 合并和 multibuffer 展开之后，UB/L1/L0C 地址规划器真正处理的“内存对象”。
 
 # SPEC_LEVEL分级
-
+SPEC_LEVEL_3：避免 pipeline conflict
+SPEC_LEVEL_2：避免同一 loop 内地址复用
+SPEC_LEVEL_1：复用 multibuffer 的整组地址
+SPEC_LEVEL_0：纯生命周期复用
 
 # Inplace Reuse
 genBuffer  = 当前操作新生成/写入的 buffer，通常是输出
