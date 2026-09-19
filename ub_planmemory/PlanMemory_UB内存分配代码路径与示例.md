@@ -35,7 +35,7 @@ PlanMemoryPass::runOnOperation()                         // Module 级入口
 │                   │   └── 标记 scalar load/store/loop buffer
 │                   ├── MergeInplaceSE()
 │                   │   ├── GenerateInplaceList()
-│                   │   └── 合并可原地复用的 StorageEntry
+│                   │   └── 合并可原地复用的 StorageEntry -> inplace 减少了两个 buffer 交接时的瞬时内存需求，但可能延长大存储块的占用、扩大 pipeline 冲突并限制后续地址布局，不是无条件有利
 │                   ├── ExpandMultiBufferStorageEntry()
 │                   ├── MergeSameScopeSE()
 │                   │   ├── UB root + UB children
@@ -75,11 +75,11 @@ PlanMemoryPass::runOnOperation()                         // Module 级入口
     └── fixMultibufferEnabledPointerCastOps()
 ```
 
-## 9. 完整示例
+## 2. 完整示例
 
 下面使用 KB 表示大小，并假设所有大小已经满足 UB 对齐。
 
-### 9.1 输入
+### 2.1 输入
 
 假设可用 UB：
 
@@ -104,7 +104,7 @@ ubSpaceSize = 256 KB
 
 所以快速路径失败。
 
-### 9.2 UB 重排
+### 2.2 UB 重排
 
 按类别排序：
 
@@ -125,7 +125,7 @@ root = U
 children = [D, V, S]
 ```
 
-### 9.3 Level 3 单级试排
+### 2.3 Level 3 单级试排
 
 初始无限 outline：
 
@@ -172,7 +172,7 @@ maxAllocBits = 320 KB > 256 KB
 
 因此不能接受，进入有限容量的多级规划。
 
-### 9.4 有限 outline 中首次尝试
+### 2.4 有限 outline 中首次尝试
 
 重新建立：
 
@@ -199,7 +199,7 @@ V -> [160,256)
 
 S 在 Level 3、2、1、0 都找不到 64 KB 可用区间，触发回滚。
 
-### 9.5 回滚并降低 V 的策略
+### 2.5 回滚并降低 V 的策略
 
 规划器撤销 V 的历史记录，把回滚点移到 V。假设 V 与 D 属于同一个 loop：
 
@@ -231,7 +231,7 @@ V -> [64,160), life=[5,9]
 [160,256) life={}
 ```
 
-### 9.6 再次规划 S
+### 2.6 再次规划 S
 
 S 生命周期 `[2,8]` 与 D、V 都重叠，因此不能使用 `[64,160)`；但 `[160,224)` 仍为空：
 
@@ -256,7 +256,7 @@ UB [224,256)   未使用
 
 规划成功。
 
-### 9.7 最终 offset 回写
+### 2.7 最终 offset 回写
 
 `UpdateBuffer2Offsets()` 将 `bitsOffset` 转成 byte offset，并给 entry 中所有 `inplaceBuffers` 写入地址：
 
@@ -269,7 +269,7 @@ S.offset = 160 KB
 
 随后 `walkAllocToPointerCast()` 把这些地址写回对应的 local alloc/pointer cast。D 和 V 是不同逻辑 buffer，但生命周期不重叠，因此共享同一个 UB 地址。
 
-## 10. 核心理解
+## 3. 核心理解
 
 UB 分配可以压缩为下面这条主线：
 
