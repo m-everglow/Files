@@ -466,17 +466,6 @@ maxExpandedNode = 固定数量
 maxCandidatesPerUnit = 固定数量
 
 相同 IR、相同配置一定得到相同结果和近似相同工作量。
-这个方案比当前算法强的关键在于：
-
-当前：
-entry A 选 offset 0
-→ entry B 失败
-→ 只做非常局部的 spec rollback
-
-Beam：
-entry A 同时保留 offset 0、offset X、offset Y
-→ 分别继续放置 B、C
-→ 较晚发现某条路径更好时，不需要重跑 liveness
 
 建议用方案一的结果作为第一个完整解和搜索上界。这样：
 - 简单输入通常直接结束；
@@ -501,7 +490,7 @@ entry A 同时保留 offset 0、offset X、offset Y
     minimize peak
     peak ≥ offset[i] + size[i]
 
-spec level 可以通过布尔变量和 penalty 建模。OR-Tools CP-SAT 原生支持整数变量、可选约束和 NoOverlap2D；将时间作为固定 X 轴、地址作为变量 Y 轴即可表达生命周期矩形不重叠。OR-Tools CP-SAT 接口
+spec level 可以通过布尔变量和 penalty 建模。OR-Tools CP-SAT 原生支持整数变量、可选约束和 NoOverlap2D；将时间作为固定 X 轴、地址作为变量 Y 轴即可表达生命周期矩形不重叠。
 
 优点：
 - 可以证明最优；
@@ -538,3 +527,37 @@ spec level 可以通过布尔变量和 penalty 建模。OR-Tools CP-SAT 原生�
   在 best-fit 结果上加入 bounded Beam Search
   保留多个部分布局
   用固定节点预算控制编译开销
+
+方案二与当前方案的对比
+
+当前方案基本是单路径：
+
+处理 Entry A
+  → 从低地址扫描
+  → 找到第一个可用位置
+  → 提交
+
+处理 Entry B
+  → 从低地址扫描
+  → 找到第一个可用位置
+  → 提交
+
+处理 Entry C
+  → 无法分配
+  → 局部 rollback / 降 spec_level
+
+维护的只有一个布局：
+当前状态 = 唯一的 outline + history
+
+方案二：
+处理 Entry A
+  ├── 状态 S1：A 放在 offset 0
+  ├── 状态 S2：A 放在 offset 4096
+  └── 状态 S3：A 放在 offset 8192
+
+处理 Entry B
+  ├── 从 S1 扩展若干布局
+  ├── 从 S2 扩展若干布局
+  └── 从 S3 扩展若干布局
+
+对所有新状态评分，只保留最好的 Beam width 个
