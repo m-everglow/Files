@@ -1,4 +1,4 @@
-# PlanMemory 的 UB 内存分配代码路径与示例
+# PlanMemory UB 规划重构
 
 源文件：`bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp`
 
@@ -300,3 +300,241 @@ inplace 合并，multibuffer 展开
 当前算法的本质是：
 
 > 以 StorageEntry 顺序为基础、以 outline 为地址状态、以生命周期为正确性底线、以 spec level 控制 pipeline/multibuffer 策略的 first-fit 风格贪心规划，并通过有限回滚和最多 20 次确定性顺序重试提高成功率。
+
+
+## 4. 当前方案的问题
+
+### 4.1. First-fit 可能产生假失败
+当前PLAN_FAILED，代表当前排序、inplace 组合和有限回滚没有找到可行布局，而不一定是UB容量不足。
+
+```text
+当前 entry 选择第一个可行位置
+    ↓
+局部选择占据关键空间
+    ↓
+后续 entry 无法放置
+    ↓
+PLAN_FAILED
+```
+
+### 4.2. Optional inplace 在全局规划前被不可逆合并
+
+```text
+大输入 A，短生命周期
+小输出 B，长生命周期
+
+A/B inplace
+    ↓
+B 的整个生命周期占据 A 的大空间
+    ↓
+其他 buffer 无法复用 A 的旧地址
+```
+
+### 4.3. 20 次 attempt 重复完整分析，编译成本高但搜索覆盖有限
+
+每次attempt都执行完整的如下步骤：
+```text
+MLIR Liveness
+IR 遍历
+alias/gen-kill/BufferLife
+StorageEntry 构建
+inplace 合并
+outline 规划
+rollback
+```
+
+更合理的方式是：
+```text
+分析一次
+    ↓
+构建不可变规划问题
+    ↓
+solver 内低成本尝试不同决策
+```
+
+###  4.4. 求解结果高度依赖 StorageEntry 顺序
+
+当前 solver 是顺序敏感的 first-fit 启发式算法；20 次确定性 shuffle 是一种 multi-start heuristic，通过尝试若干不同的间接输入顺序提高找到可行解的概率，但它既不保证找到可行解，也不解决 first-fit 缺少全局视角的根本问题。
+
+StorageEntry顺序的来源：
+```text
+同一个 IR
+    ↓
+相同的 buffer、大小、生命周期、UB 容量
+    ↓
+不同 attempt 使用不同 seed
+    ↓
+部分 live buffer 的遍历顺序变化
+    ↓
+gen/kill vector 顺序变化
+    ↓
+inplace pair 和 StorageEntry 顺序可能变化
+    ↓
+first-fit 得到不同地址布局
+    ↓
+可能出现不同 offset、不同峰值，甚至成功/失败差异
+```
+
+## 5. 重构方案
+
+### 5.1. 方案一：确定性 Global Decreasing Size Best-Fit
+做法：
+1. 对同一 mem Scope 的 AllocationUnit 建立冲突关系。
+2. 使用固定规则排序，例如：
+    memoryUnique
+    → MultiBuffer/同址组合
+    → conflictBytes 降序
+    → alignedSize 降序
+    → lifeSpan 降序
+    → StableBufferId
+3. 对当前 entry，生成所有可能的候选地址：
+    0
+    AlignUp(other.offset + other.size)
+4. 检查候选地址与所有冲突 entry 是否空间重叠。
+5. 不选扫描到的第一个，而是评估全部候选，选择代价最小的一个。
+代价可以是：
+    (newPeak,
+    specLevelPenalty,
+    generatedFragmentSize,
+    offset)
+
+优点：
+- 一次 liveness、一次分配；
+- 行为稳定；
+- 比当前“从低地址遇到第一个就提交”更合理；
+- 实现成本较低；
+- 容易先与现有实现做 A/B 对比。
+缺点：
+- 依然是单路径贪心；
+- 前面一次不理想的决策仍然无法撤销；
+- 仍然可能出现“明明存在可行解，但算法报告失败”。
+因此它适合作为新框架的 baseline，不建议作为重构的最终目标。
+
+
+### 5.2. 方案二：确定性有界 Beam Search / Branch-and-Bound
+这是推荐方案。
+核心思想是：每次不只保留一个局部最优布局，而是保留前 K 个不同的部分布局。
+固定 AllocationUnit 输入
+        ↓
+最难分配的 unit 优先
+        ↓
+枚举当前 unit 的全部边界候选地址
+        ↓
+产生多个新状态
+        ↓
+计算每个状态的下界和代价
+        ↓
+剪枝并保留最好的 K 个状态
+        ↓
+继续下一个 unit
+
+候选地址仍然不需要遍历整个 UB 地址空间。对于普通连续布局，只需要考虑：
+0
+AlignUp(已分配冲突块的结束地址)
+
+原因是：如果一个可行 buffer 没有贴着地址 0 或某个冲突块的右边界，它通常还能继续向低地址移动；因此真正有意义的紧凑布局一般位于这些边界上。
+
+每个搜索状态包含：
+struct PlanningState {
+  DenseMap<UnitId, uint64_t> offsets;
+  uint64_t peakBits;
+  SpecPenalty penalty;
+  FragmentMetric fragmentation;
+};
+
+排序目标建议采用字典序，而不是简单的加权求和：
+1. peakBits 必须 ≤ maxBits
+2. 尽量保持 SPEC_LEVEL_3 / no-stall
+3. 尽量减少降级到 level 2/1/0 的 entry 数量或容量
+4. 最小化 peakBits
+5. 最小化碎片
+6. StableId 保证相同代价下结果稳定
+
+剪枝下界可以先实现：
+lowerBound =
+    max(
+        currentPeak,
+        maximumLiveBytes,
+        mandatoryConflictLowerBound
+    )
+
+如果 lowerBound > maxBits，状态直接丢弃。
+
+为了让编译时间严格可控，不建议用 wall-clock timeout，而使用确定性预算：
+beamWidth       = 8/16/32
+maxExpandedNode = 固定数量
+maxCandidatesPerUnit = 固定数量
+
+相同 IR、相同配置一定得到相同结果和近似相同工作量。
+这个方案比当前算法强的关键在于：
+
+当前：
+entry A 选 offset 0
+→ entry B 失败
+→ 只做非常局部的 spec rollback
+
+Beam：
+entry A 同时保留 offset 0、offset X、offset Y
+→ 分别继续放置 B、C
+→ 较晚发现某条路径更好时，不需要重跑 liveness
+
+建议用方案一的结果作为第一个完整解和搜索上界。这样：
+- 简单输入通常直接结束；
+- 困难输入才进入有限搜索；
+- 搜索耗尽预算时，仍然至少有一个合法的 greedy 结果；
+- 不再需要 20 次随机 attempt。
+
+### 5.3. 方案三：CP-SAT/ILP 精确求解
+每个 AllocationUnit 建立地址变量：
+    offset[i] ≥ 0
+    offset[i] % alignment[i] = 0
+    offset[i] + size[i] ≤ maxBits
+
+对于任意硬冲突 pair (i, j)：
+    offset[i] + size[i] ≤ offset[j]
+    OR
+    offset[j] + size[j] ≤ offset[i]
+
+同址/inplace：
+    offset[i] = offset[j]
+目标：
+    minimize peak
+    peak ≥ offset[i] + size[i]
+
+spec level 可以通过布尔变量和 penalty 建模。OR-Tools CP-SAT 原生支持整数变量、可选约束和 NoOverlap2D；将时间作为固定 X 轴、地址作为变量 Y 轴即可表达生命周期矩形不重叠。OR-Tools CP-SAT 接口
+
+优点：
+- 可以证明最优；
+- 找不到方案时可以更可信地判断不可行；
+- 非常适合作为单元测试和算法质量评估的 oracle。
+缺点：
+- 引入第三方求解器依赖；
+- 最坏情况指数复杂度；
+- BufferLifeVec 多段生命周期、MultiBuffer、spec level 会显著增加模型复杂度；
+- 编译延迟难以保证；
+- 大函数不适合作为默认生产路径。
+
+建议用途：
+- 小规模函数精确求解；
+- CI 中随机生成小图，对比启发式结果；
+- 验证“当前 greedy 报失败但实际有解”的 testcase；
+- 衡量 Beam Search 与最优值之间的 gap。
+
+### 5.4. 最终建议
+选择方案二，但按三步落地：
+
+阶段一：解耦
+  一次确定性 liveness
+  → MemoryPlanningProblem
+  → Solver 接口
+  → 独立 Verifier
+
+阶段二：建立基线
+  实现 deterministic global best-fit
+  替换 outline first-fit
+  去掉 20 次 attempt
+
+阶段三：提升求解质量
+  在 best-fit 结果上加入 bounded Beam Search
+  保留多个部分布局
+  用固定节点预算控制编译开销
