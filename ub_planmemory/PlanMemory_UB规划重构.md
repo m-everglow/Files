@@ -377,6 +377,11 @@ first-fit 得到不同地址布局
 
 ## 5. 重构方案
 
+1、提供复杂度分析
+2、best-fit主要提供性能优先的分配策略
+3、best-fit失败，落入beam search展开更广范围的搜索，可以基于best-fit的已有信息进行快速剪枝
+
+
 ### 5.1. 方案一：确定性 Global Decreasing Size Best-Fit
 做法：
 1. 对同一 mem Scope 的 AllocationUnit 建立冲突关系。
