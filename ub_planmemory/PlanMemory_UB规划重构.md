@@ -1,29 +1,27 @@
 # 重构规划
 ## 1. 调整顶层的attempt的位置
-### 提交1：显式区分 policy 和 ordering attempt
-    不改变算法结果，只调整控制流：
     PlanMemoryForFuncOp
-    → PlanWithPolicies
-    → LegacyFirstFitPlanner
-### 提交2：消除规划过程中的全局副作用
-    处理：
-    remove MultiBufferAttr
-    disableVFReachableCheck pass成员
-    改为 policy-local，成功后再 commit。
-### 提交3：liveness 确定化并允许复用
-    处理：
-    randomSeed
-    randomGenerator
-    getShuffledRange
-    SetLinearOperation(move)
-    让 liveness 每个 policy 只执行一次。
-### 提交4：顺序扰动下沉到 StorageEntry 层
-    新增：
-    BuildStorageEntryOrder()
-    LegacyOrderKind
-    StableStorageEntryId
-    PlanningWorkingSet
-    first-fit 的 retry 完全封装在 LegacyFirstFitPlanner 中。
+    │
+    │ 选择 MemoryPlannerKind
+    │ 当前：LEGACY_FIRST_FIT
+    ▼
+    PlanWithPolicies
+    │
+    ├─ 构造 PlanningInputBuilder
+    │
+    └─ 遍历三个 PlanningPolicy
+        │
+        ├─ LEGACY_FIRST_FIT
+        │    └─ RunLegacyFirstFitPolicy
+        │         ├─ 每个 policy 执行 3 次 attempt
+        │         ├─ BuildLegacyInput(attemptSeed)
+        │         └─ RunMemoryPlan(LEGACY_FIRST_FIT)
+        │
+        └─ ORDER_INDEPENDENT
+                └─ RunOrderIndependentPolicy
+                    ├─ 每个 policy 只执行一次
+                    ├─ BuildFixedInput()
+                    └─ RunMemoryPlan(ORDER_INDEPENDENT)
 
 ## 2. 替换first-fit算法
 
