@@ -1,4 +1,35 @@
-# PlanMemory UB 规划重构
+# 重构规划
+## 1. 调整顶层的attempt的位置
+### 提交1：显式区分 policy 和 ordering attempt
+    不改变算法结果，只调整控制流：
+    PlanMemoryForFuncOp
+    → PlanWithPolicies
+    → LegacyFirstFitPlanner
+### 提交2：消除规划过程中的全局副作用
+    处理：
+    remove MultiBufferAttr
+    disableVFReachableCheck pass成员
+    改为 policy-local，成功后再 commit。
+### 提交3：liveness 确定化并允许复用
+    处理：
+    randomSeed
+    randomGenerator
+    getShuffledRange
+    SetLinearOperation(move)
+    让 liveness 每个 policy 只执行一次。
+### 提交4：顺序扰动下沉到 StorageEntry 层
+    新增：
+    BuildStorageEntryOrder()
+    LegacyOrderKind
+    StableStorageEntryId
+    PlanningWorkingSet
+    first-fit 的 retry 完全封装在 LegacyFirstFitPlanner 中。
+
+## 2. 替换first-fit算法
+
+
+
+# PlanMemory 总体分析
 
 源文件：`bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp`
 
