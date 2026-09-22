@@ -1,30 +1,426 @@
 # 重构规划
-## 1. 调整顶层的attempt的位置
-    PlanMemoryForFuncOp
-    │
-    │ 选择 MemoryPlannerKind
-    │ 当前：LEGACY_FIRST_FIT
-    ▼
-    PlanWithPolicies
-    │
-    ├─ 构造 PlanningInputBuilder
-    │
-    └─ 遍历三个 PlanningPolicy
-        │
-        ├─ LEGACY_FIRST_FIT
-        │    └─ RunLegacyFirstFitPolicy
-        │         ├─ 每个 policy 执行 3 次 attempt
-        │         ├─ BuildLegacyInput(attemptSeed)
-        │         └─ RunMemoryPlan(LEGACY_FIRST_FIT)
-        │
-        └─ ORDER_INDEPENDENT
-                └─ RunOrderIndependentPolicy
-                    ├─ 每个 policy 只执行一次
-                    ├─ BuildFixedInput()
-                    └─ RunMemoryPlan(ORDER_INDEPENDENT)
+DSATUR 系统化选择节点，减少输入顺序依赖。
+Best-Fit 比 First-Fit 更充分地比较候选地址。
+保留已有 MultiSpec 和 rollback，继承成熟的约束降级机制。
+后续 Beam Search 可以受控探索多种节点顺序。
+固定搜索预算，编译开销比多次随机 attempt 更可控。
 
-## 2. 替换first-fit算法
 
+## 3. 当前改动
+相比主线 `6ddfdfb81`，当前改动分成两个层次。
+
+## 已完成的修改
+
+### 1. 解耦旧算法与顶层 attempt
+
+- 新增 `MemoryPlannerKind`：
+  - `LEGACY_FIRST_FIT`
+  - `ORDER_INDEPENDENT`
+- `PlanMemoryForFuncOp` 不再直接承载 20 次 attempt。
+- Legacy 路径仍保留原来的 attempt 行为，用于对比和回退验证。
+- 新算法每个 policy 只构造一次固定 liveness 输入。
+- 保留原有三档 policy 语义：
+  - 默认规划；
+  - 清理 MultiBufferAttr；
+  - 禁用 VF reachable check。
+
+也就是说：消除的是“排序扰动 attempt”，没有修改上层 policy 的既有语义。
+
+### 2. 引入 DSATUR + Best-Fit
+
+新算法路径现在是：
+
+```text
+固定 liveness
+→ 构造 StorageEntry
+→ 必须 inplace 的 alias 合并
+→ 普通 inplace 作为可选约束
+→ 构建冲突图
+→ DSATUR 确定 SE 顺序
+→ Best-Fit 为单个 SE 选择地址
+→ MultiSpec 降级
+→ rollback
+→ Verifier
+```
+
+具体包括：
+
+- DSATUR 根据以下信息选择节点：
+  - 饱和度；
+  - SE/组容量；
+  - 冲突度数；
+  - 稳定顺序。
+- Best-Fit 扫描全部可用 outline 区间，优先：
+  - 剩余空间更小；
+  - 跨越 bound 更少；
+  - 地址更低。
+- 不再按照输入队列直接执行 first-fit。
+
+### 3. 保留原有 MultiSpec 和 rollback
+
+新算法没有抛弃已有机制。
+
+单节点 Best-Fit 失败时：
+
+```text
+SPEC_LEVEL_3
+→ SPEC_LEVEL_2
+→ SPEC_LEVEL_1
+→ SPEC_LEVEL_0
+→ ApplyFailStrategy
+→ 回滚前序节点
+→ 重新规划
+```
+
+因此我们替换的是：
+
+- SE 的处理顺序；
+- 单节点地址选择算法。
+
+而不是重写整个 PlanMemory 状态机。
+
+### 4. inplace merge 进入求解过程
+
+现在区分：
+
+- alias 等必须同址的 buffer：预先合并；
+- HIVM/VF optional inplace：不再预先贪心合并；
+- optional inplace 作为合法同址关系交给新求解器决定。
+
+这避免了旧实现“遇到第一个可 inplace buffer 就固定合并”的局部决策。
+
+### 5. MultiBuffer 接入新算法
+
+- 不再因为存在 MultiBuffer 就整体退回旧 first-fit。
+- 一个 MultiBuffer 的 first/other StorageEntry 被视为 DSATUR 排序组。
+- 组内节点保持连续。
+- 地址规划仍复用原有 `SPEC_LEVEL_1` 联动分配和成组 rollback。
+
+### 6. 新增独立 Verifier
+
+规划成功后检查：
+
+- 地址对齐；
+- 地址是否超过物理空间；
+- 生命周期重叠的 SE 是否非法地址重叠；
+- optional inplace 是否满足合法同址要求；
+- MultiBuffer 的不同 slot 是否分配到不同地址。
+
+### 7. 当前验证情况
+
+- `bishengir-opt` 编译成功。
+- RegBase 测试：5 个通过，2 个 unsupported，无失败。
+- fwd 真实用例规划成功，多次运行输出一致。
+- bwd 真实用例按预期 UB overflow：
+  - 需要 `2232320 bits`
+  - 可用 `2031616 bits`
+- 保持了原有最低容量诊断结果。
+- 当前代码已经整理成两个 commit。
+- 两个 third-party submodule 的脏状态未包含在修改中。
+
+## 还需要继续做的修改
+
+### 1. Beam Search
+
+这是下一步最主要的算法提升。
+
+当前 DSATUR 顺序仍然是单一路径，Best-Fit 也是单一地址选择。需要在固定预算下保留多个部分布局，例如：
+
+- DSATUR 排名前几个候选节点；
+- Best-Fit 排名前几个候选地址；
+- 不同 spec level 的候选状态。
+
+这样才能处理“稍微调整节点顺序或槽位，就能成功分配”的情况。
+
+### 2. 完善 DSATUR 的内存目标评分 --DONE
+
+DSATUR 原本主要优化颜色数量，目前已经加入 size 权重，但还可以继续加入：
+
+- 生命周期长度；
+- 当前峰值增长；
+- 可复用地址数量；
+- DMA/Scalar pipeline 类型；
+- optional inplace 收益；
+- MultiBuffer 组的实际容量压力。
+
+## DSATUR 如何确定节点顺序
+
+DSATUR 的处理单位是 `StorageEntry group`：
+
+- 普通 SE：一个 group 只有一个节点。
+- MultiBuffer：first buffer 和 other buffers 组成一个 group，保证连续规划。
+
+### 1. 构建冲突图
+
+两个 SE 之间可能存在：
+
+- 生命周期冲突；
+- same-loop pipeline 冲突；
+- DMA pipeline 冲突；
+- optional inplace 关系。
+
+前三种形成冲突边；optional inplace 不形成冲突边，而是作为潜在收益。
+
+### 2. 动态计算饱和度
+
+每选择一个 group，就给它分配一个临时颜色。
+
+未选择节点的饱和度为：
+
+```text
+与它冲突的已选择邻居，使用了多少种不同颜色
+```
+
+饱和度越高，说明它受到已选节点约束越强，越优先处理。
+
+这里的颜色仅用于生成顺序，不是最终物理地址。
+
+### 3. 字典序比较
+
+每一步从未选择 group 中按以下顺序选择：
+
+```text
+1. saturation 越大越优先
+2. weightedConflictBytes 越大越优先
+3. groupBytes 越大越优先
+4. selectedOptionalGain 越大越优先
+5. totalOptionalGain 越大越优先
+6. reuseCandidateCount 越小越优先
+7. liveTicks 越大越优先
+8. pipelineRank 越小越优先
+9. degree 越大越优先
+10. stableId 越小越优先
+```
+
+各指标含义：
+
+- `weightedConflictBytes`
+
+  ```text
+  Σ min(当前 group 容量, 冲突邻居容量)
+  ```
+
+  表示冲突边实际阻塞的内存复用压力。
+
+- `groupBytes`
+
+  group 中所有 SE 的对齐后容量之和。MultiBuffer 会计算全部槽位。
+
+- `selectedOptionalGain`
+
+  当前 group 与已经选中的 optional-inplace group 之间，可节省的容量。
+
+- `totalOptionalGain`
+
+  当前 group 与所有 optional-inplace group 的理论复用收益。
+
+- `reuseCandidateCount`
+
+  与当前 group 没有生命周期冲突的其他 group 数量。越少说明越难放置，因此越早处理。
+
+- `liveTicks`
+
+  SE 所有生命周期区间实际覆盖的 tick 数。MultiBuffer group 取成员最大值。
+
+- `pipelineRank`
+
+  ```text
+  memoryUnique = 0
+  DMA          = 1
+  normal       = 2
+  scalar       = 3
+  ```
+
+- `degree`
+
+  冲突邻居数量。
+
+- `stableId`
+
+  最后的确定性 tie-break，保证相同输入得到稳定顺序。
+
+最终得到：
+
+```text
+DSATUR group 顺序
+→ 展开每个 MultiBuffer group
+→ 固定 StorageEntry 顺序
+```
+
+对应实现位于 [PlanMemory.cpp](/home/VSCode/AscendNPU-IR/bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp:1836)。
+
+---
+
+## Best-Fit 如何选择物理槽位
+
+DSATUR 选定当前 SE 后，Best-Fit 在当前 `outline` 中搜索地址。
+
+### 1. 枚举所有可用区间
+
+从每个 outline bound 开始向后拼接：
+
+```text
+start
+  → start + 1
+  → start + 2
+  → ...
+```
+
+直到累计空间满足：
+
+```text
+sectionSize >= entry.alignedConstBits
+```
+
+每个满足条件的区间是一个候选物理槽位。
+
+### 2. 检查候选是否合法
+
+每个候选依次检查：
+
+```text
+rollback 后是否与上次失败方案相同
+→ 生命周期是否允许复用
+→ SPEC_LEVEL_1 MultiBuffer 联动约束
+→ SPEC_LEVEL_2 same-loop pipeline 约束
+→ SPEC_LEVEL_3 DMA pipeline 约束
+```
+
+optional inplace 会放宽对应的生命周期冲突，但必须是经过分析确认的合法 pair。
+
+### 3. 给候选槽位评分
+
+候选槽位按以下字典序比较：
+
+```text
+1. candidatePeak 越小越好
+2. optionalReusePenalty 越小越好
+3. residual 越小越好
+4. span 越小越好
+5. offset 越小越好
+```
+
+#### `candidatePeak`
+
+先从当前分配历史计算峰值：
+
+```text
+currentPeak =
+  max(record.offset + record.extent)
+```
+
+候选分配后的峰值：
+
+```text
+candidatePeak =
+  max(currentPeak, candidateOffset + entrySize)
+```
+
+因此优先选择不会扩大当前峰值的地址。
+
+#### `optionalReusePenalty`
+
+```text
+0：该地址实现了合法 optional inplace
+1：没有实现 optional inplace
+```
+
+峰值相同时，优先实现原地复用。
+
+#### `residual`
+
+```text
+residual = candidateSectionSize - entrySize
+```
+
+越小表示槽位和当前 SE 越匹配，即传统 Best-Fit。
+
+#### `span`
+
+当前分配需要拼接的 outline bound 数量。
+
+越少意味着：
+
+- outline 碎片更少；
+- UpdateOutline 更简单；
+- rollback 修改范围更小。
+
+#### `offset`
+
+前面指标全部相同时，选择低地址，保证结果确定。
+
+### 4. 提交最佳候选
+
+选出最佳候选后：
+
+```text
+设置 entry.bitsOffset
+→ UpdateOutline
+→ 记录 PlanRecord
+→ SPEC_LEVEL_1 时分配 MultiBuffer 关联地址
+```
+
+如果当前 spec level 没有任何合法槽位：
+
+```text
+SPEC_LEVEL_3 → 2 → 1 → 0
+```
+
+所有级别都失败后，调用原来的 `ApplyFailStrategy` 回滚前面若干 SE，再继续规划。
+
+对应实现位于 [PlanMemory.cpp](/home/VSCode/AscendNPU-IR/bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp:2819)。
+
+整体关系是：
+
+```text
+DSATUR：决定下一个分配谁
+Best-Fit：决定它放在哪里
+MultiSpec：决定使用哪一级约束
+Rollback：当前固定顺序失败时，回退前序布局
+```
+
+### 3. 扩展 Verifier --低
+
+当前 Verifier 主要验证内存安全，还没有完整验证：
+
+- SPEC_LEVEL_3 的全部 DMA pipe 限制；
+- SPEC_LEVEL_2 的 same-loop pipe 限制；
+- SPEC_LEVEL_1 的 first/other buffer 对应关系；
+- rollback 后所有 `appliedSpecLevel` 是否一致；
+- `buffer2Offsets` 最终导出结果是否完整。
+
+### 4. 更大规模的真实模型验证
+
+目前真实用例只有 fwd/bwd。还需要批量比较：
+
+- 新旧算法成功率；
+- UB/L1/L0C 峰值；
+- 编译时间；
+- rollback 次数；
+- 不同 IR 输入顺序下的确定性；
+- 旧算法成功但新算法失败的回归案例；
+- 新算法成功但旧算法失败的收益案例。
+
+### 5. 性能优化
+
+当前主要复杂度来自：
+
+- 冲突图的 `O(N²)` 建图；
+- Best-Fit 对 outline 的多区间扫描；
+- rollback 后重复 Best-Fit；
+- level-3 峰值诊断的额外规划。
+
+后续可加入冲突缓存、候选区间索引和增量状态，为 Beam Search 做准备。
+
+### 6. 最终清理 Legacy 代码 --低
+
+目前 Legacy First-Fit 和 20 次 attempt 被保留用于 A/B 对比。新算法稳定后再决定：
+
+- 保留为调试开关；
+- 保留为兜底；
+- 或完全删除 attempt、随机数及旧 first-fit 路径。
+
+整体来看，当前已经完成了“可工作的确定性 DSATUR + Best-Fit 基线”。接下来重点是 Beam Search、Verifier 完善和大规模模型评估。
 
 
 # PlanMemory 总体分析
