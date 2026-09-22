@@ -9,9 +9,9 @@ Best-Fit 比 First-Fit 更充分地比较候选地址。
 ## 3. 当前改动
 相比主线 `6ddfdfb81`，当前改动分成两个层次。
 
-## 已完成的修改
+### 已完成的修改
 
-### 1. 解耦旧算法与顶层 attempt
+#### 1. 解耦旧算法与顶层 attempt
 
 - 新增 `MemoryPlannerKind`：
   - `LEGACY_FIRST_FIT`
@@ -26,7 +26,7 @@ Best-Fit 比 First-Fit 更充分地比较候选地址。
 
 也就是说：消除的是“排序扰动 attempt”，没有修改上层 policy 的既有语义。
 
-### 2. 引入 DSATUR + Best-Fit
+#### 2. 引入 DSATUR + Best-Fit
 
 新算法路径现在是：
 
@@ -56,7 +56,7 @@ Best-Fit 比 First-Fit 更充分地比较候选地址。
   - 地址更低。
 - 不再按照输入队列直接执行 first-fit。
 
-### 3. 保留原有 MultiSpec 和 rollback
+#### 3. 保留原有 MultiSpec 和 rollback
 
 新算法没有抛弃已有机制。
 
@@ -79,7 +79,7 @@ SPEC_LEVEL_3
 
 而不是重写整个 PlanMemory 状态机。
 
-### 4. inplace merge 进入求解过程
+#### 4. inplace merge 进入求解过程
 
 现在区分：
 
@@ -89,14 +89,14 @@ SPEC_LEVEL_3
 
 这避免了旧实现“遇到第一个可 inplace buffer 就固定合并”的局部决策。
 
-### 5. MultiBuffer 接入新算法
+#### 5. MultiBuffer 接入新算法
 
 - 不再因为存在 MultiBuffer 就整体退回旧 first-fit。
 - 一个 MultiBuffer 的 first/other StorageEntry 被视为 DSATUR 排序组。
 - 组内节点保持连续。
 - 地址规划仍复用原有 `SPEC_LEVEL_1` 联动分配和成组 rollback。
 
-### 6. 新增独立 Verifier
+#### 6. 新增独立 Verifier
 
 规划成功后检查：
 
@@ -106,7 +106,7 @@ SPEC_LEVEL_3
 - optional inplace 是否满足合法同址要求；
 - MultiBuffer 的不同 slot 是否分配到不同地址。
 
-### 7. 当前验证情况
+#### 7. 当前验证情况
 
 - `bishengir-opt` 编译成功。
 - RegBase 测试：5 个通过，2 个 unsupported，无失败。
@@ -118,9 +118,9 @@ SPEC_LEVEL_3
 - 当前代码已经整理成两个 commit。
 - 两个 third-party submodule 的脏状态未包含在修改中。
 
-## 还需要继续做的修改
+### 还需要继续做的修改
 
-### 1. Beam Search
+#### 1. Beam Search
 
 这是下一步最主要的算法提升。
 
@@ -132,7 +132,7 @@ SPEC_LEVEL_3
 
 这样才能处理“稍微调整节点顺序或槽位，就能成功分配”的情况。
 
-### 2. 完善 DSATUR 的内存目标评分 --DONE
+#### 2. 完善 DSATUR 的内存目标评分 --DONE
 
 DSATUR 原本主要优化颜色数量，目前已经加入 size 权重，但还可以继续加入：
 
@@ -143,14 +143,14 @@ DSATUR 原本主要优化颜色数量，目前已经加入 size 权重，但还�
 - optional inplace 收益；
 - MultiBuffer 组的实际容量压力。
 
-## DSATUR 如何确定节点顺序
+##### DSATUR 如何确定节点顺序
 
 DSATUR 的处理单位是 `StorageEntry group`：
 
 - 普通 SE：一个 group 只有一个节点。
 - MultiBuffer：first buffer 和 other buffers 组成一个 group，保证连续规划。
 
-### 1. 构建冲突图
+###### 1. 构建冲突图
 
 两个 SE 之间可能存在：
 
@@ -161,7 +161,7 @@ DSATUR 的处理单位是 `StorageEntry group`：
 
 前三种形成冲突边；optional inplace 不形成冲突边，而是作为潜在收益。
 
-### 2. 动态计算饱和度
+###### 2. 动态计算饱和度
 
 每选择一个 group，就给它分配一个临时颜色。
 
@@ -175,7 +175,7 @@ DSATUR 的处理单位是 `StorageEntry group`：
 
 这里的颜色仅用于生成顺序，不是最终物理地址。
 
-### 3. 字典序比较
+###### 3. 字典序比较
 
 每一步从未选择 group 中按以下顺序选择：
 
@@ -251,11 +251,11 @@ DSATUR group 顺序
 
 ---
 
-## Best-Fit 如何选择物理槽位
+##### Best-Fit 如何选择物理槽位
 
 DSATUR 选定当前 SE 后，Best-Fit 在当前 `outline` 中搜索地址。
 
-### 1. 枚举所有可用区间
+###### 1. 枚举所有可用区间
 
 从每个 outline bound 开始向后拼接：
 
@@ -274,7 +274,7 @@ sectionSize >= entry.alignedConstBits
 
 每个满足条件的区间是一个候选物理槽位。
 
-### 2. 检查候选是否合法
+###### 2. 检查候选是否合法
 
 每个候选依次检查：
 
@@ -288,7 +288,7 @@ rollback 后是否与上次失败方案相同
 
 optional inplace 会放宽对应的生命周期冲突，但必须是经过分析确认的合法 pair。
 
-### 3. 给候选槽位评分
+###### 3. 给候选槽位评分
 
 候选槽位按以下字典序比较：
 
@@ -349,7 +349,7 @@ residual = candidateSectionSize - entrySize
 
 前面指标全部相同时，选择低地址，保证结果确定。
 
-### 4. 提交最佳候选
+##### 4. 提交最佳候选
 
 选出最佳候选后：
 
