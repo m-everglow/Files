@@ -5,6 +5,10 @@ Best-Fit 比 First-Fit 更充分地比较候选地址。
 后续 Beam Search 可以受控探索多种节点顺序。
 固定搜索预算，编译开销比多次随机 attempt 更可控。
 
+代码疑问：
+1、MergeRequiredInplaceSE真的和MergeInplaceSE有区别吗，BuildOptionalInplaceEntryPairs真的生效了吗
+2、1740行不需要hasOptionalInplace的判断？
+
 
 ## 3. 当前改动
 相比主线 `6ddfdfb81`，当前改动分成两个层次。
@@ -55,6 +59,55 @@ Best-Fit 比 First-Fit 更充分地比较候选地址。
   - 跨越 bound 更少；
   - 地址更低。
 - 不再按照输入队列直接执行 first-fit。
+
+##### 当前 DSATUR 按以下字典序选择 group：
+    1. `saturation` 越大越优先  -> 相同颜色：这些节点彼此没有冲突，理论上具有共享资源的可能
+    已选择的冲突邻居使用的不同颜色越多，约束越强。
+
+    2. `weightedConflictBytes` 越大越优先  -> 因为冲突而无法复用的容量大小
+    计算方式：
+    ```text
+    Σ min(当前 group 容量, 冲突邻居容量)
+    ```
+
+    3. `groupBytes` 越大越优先  -> 当前节点的容量大小
+    MultiBuffer group 使用所有成员的总容量。
+
+    4. `selectedOptionalGain` 越大越优先  -> alias buffer必须同址，VF/HIVM buffer可选复用
+    与已经选中 group 的 optional inplace 潜在收益。
+
+    5. `totalOptionalGain` 越大越优先  -> 衡量节点整体拥有多少潜在 inplace 价值，selectedOptionalGain倾向把 optional-inplace 关联节点安排得更接近
+    与全部 optional inplace peer 的理论复用收益。
+
+    6. `reuseCandidateCount` 越小越优先  
+    可进行生命周期复用的 group 越少，说明越难放置。
+
+    7. `liveTicks` 越大越优先  
+    实际生命周期越长，越早处理。
+
+    8. `pipelineRank` 越小越优先
+
+    ```text
+    0：memoryUnique
+    1：DMA
+    2：普通 buffer
+    3：scalar pipeline
+    ```
+
+    9. `degree` 越大越优先  
+    冲突邻居数量越多，越优先。
+
+    10. `canonicalIndex` 越小越优先  
+        最终的稳定 tie-break，保证结果确定。
+
+    只有前一个指标相同时，才会比较下一个指标。
+
+##### 当前 best-fit 按以下字典序选择 SE：
+    1. candidatePeak 越小越好 -> 对峰值影响小
+    2. optionalReusePenalty 越小越好 -> 尽量采用原地复用
+    3. residual 越小越好 -> 引入的outline碎片小，传统的"best-fit"概念
+    4. span 越小越好 -> 跨越的outline区间少
+    5. offset 越小越好
 
 #### 3. 保留原有 MultiSpec 和 rollback
 
@@ -142,242 +195,6 @@ DSATUR 原本主要优化颜色数量，目前已经加入 size 权重，但还�
 - DMA/Scalar pipeline 类型；
 - optional inplace 收益；
 - MultiBuffer 组的实际容量压力。
-
-##### DSATUR 如何确定节点顺序
-
-DSATUR 的处理单位是 `StorageEntry group`：
-
-- 普通 SE：一个 group 只有一个节点。
-- MultiBuffer：first buffer 和 other buffers 组成一个 group，保证连续规划。
-
-###### 1. 构建冲突图
-
-两个 SE 之间可能存在：
-
-- 生命周期冲突；
-- same-loop pipeline 冲突；
-- DMA pipeline 冲突；
-- optional inplace 关系。
-
-前三种形成冲突边；optional inplace 不形成冲突边，而是作为潜在收益。
-
-###### 2. 动态计算饱和度
-
-每选择一个 group，就给它分配一个临时颜色。
-
-未选择节点的饱和度为：
-
-```text
-与它冲突的已选择邻居，使用了多少种不同颜色
-```
-
-饱和度越高，说明它受到已选节点约束越强，越优先处理。
-
-这里的颜色仅用于生成顺序，不是最终物理地址。
-
-###### 3. 字典序比较
-
-每一步从未选择 group 中按以下顺序选择：
-
-```text
-1. saturation 越大越优先
-2. weightedConflictBytes 越大越优先
-3. groupBytes 越大越优先
-4. selectedOptionalGain 越大越优先
-5. totalOptionalGain 越大越优先
-6. reuseCandidateCount 越小越优先
-7. liveTicks 越大越优先
-8. pipelineRank 越小越优先
-9. degree 越大越优先
-10. stableId 越小越优先
-```
-
-各指标含义：
-
-- `weightedConflictBytes`
-
-  ```text
-  Σ min(当前 group 容量, 冲突邻居容量)
-  ```
-
-  表示冲突边实际阻塞的内存复用压力。
-
-- `groupBytes`
-
-  group 中所有 SE 的对齐后容量之和。MultiBuffer 会计算全部槽位。
-
-- `selectedOptionalGain`
-
-  当前 group 与已经选中的 optional-inplace group 之间，可节省的容量。
-
-- `totalOptionalGain`
-
-  当前 group 与所有 optional-inplace group 的理论复用收益。
-
-- `reuseCandidateCount`
-
-  与当前 group 没有生命周期冲突的其他 group 数量。越少说明越难放置，因此越早处理。
-
-- `liveTicks`
-
-  SE 所有生命周期区间实际覆盖的 tick 数。MultiBuffer group 取成员最大值。
-
-- `pipelineRank`
-
-  ```text
-  memoryUnique = 0
-  DMA          = 1
-  normal       = 2
-  scalar       = 3
-  ```
-
-- `degree`
-
-  冲突邻居数量。
-
-- `stableId`
-
-  最后的确定性 tie-break，保证相同输入得到稳定顺序。
-
-最终得到：
-
-```text
-DSATUR group 顺序
-→ 展开每个 MultiBuffer group
-→ 固定 StorageEntry 顺序
-```
-
-对应实现位于 [PlanMemory.cpp](/home/VSCode/AscendNPU-IR/bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp:1836)。
-
----
-
-##### Best-Fit 如何选择物理槽位
-
-DSATUR 选定当前 SE 后，Best-Fit 在当前 `outline` 中搜索地址。
-
-###### 1. 枚举所有可用区间
-
-从每个 outline bound 开始向后拼接：
-
-```text
-start
-  → start + 1
-  → start + 2
-  → ...
-```
-
-直到累计空间满足：
-
-```text
-sectionSize >= entry.alignedConstBits
-```
-
-每个满足条件的区间是一个候选物理槽位。
-
-###### 2. 检查候选是否合法
-
-每个候选依次检查：
-
-```text
-rollback 后是否与上次失败方案相同
-→ 生命周期是否允许复用
-→ SPEC_LEVEL_1 MultiBuffer 联动约束
-→ SPEC_LEVEL_2 same-loop pipeline 约束
-→ SPEC_LEVEL_3 DMA pipeline 约束
-```
-
-optional inplace 会放宽对应的生命周期冲突，但必须是经过分析确认的合法 pair。
-
-###### 3. 给候选槽位评分
-
-候选槽位按以下字典序比较：
-
-```text
-1. candidatePeak 越小越好
-2. optionalReusePenalty 越小越好
-3. residual 越小越好
-4. span 越小越好
-5. offset 越小越好
-```
-
-#### `candidatePeak`
-
-先从当前分配历史计算峰值：
-
-```text
-currentPeak =
-  max(record.offset + record.extent)
-```
-
-候选分配后的峰值：
-
-```text
-candidatePeak =
-  max(currentPeak, candidateOffset + entrySize)
-```
-
-因此优先选择不会扩大当前峰值的地址。
-
-#### `optionalReusePenalty`
-
-```text
-0：该地址实现了合法 optional inplace
-1：没有实现 optional inplace
-```
-
-峰值相同时，优先实现原地复用。
-
-#### `residual`
-
-```text
-residual = candidateSectionSize - entrySize
-```
-
-越小表示槽位和当前 SE 越匹配，即传统 Best-Fit。
-
-#### `span`
-
-当前分配需要拼接的 outline bound 数量。
-
-越少意味着：
-
-- outline 碎片更少；
-- UpdateOutline 更简单；
-- rollback 修改范围更小。
-
-#### `offset`
-
-前面指标全部相同时，选择低地址，保证结果确定。
-
-##### 4. 提交最佳候选
-
-选出最佳候选后：
-
-```text
-设置 entry.bitsOffset
-→ UpdateOutline
-→ 记录 PlanRecord
-→ SPEC_LEVEL_1 时分配 MultiBuffer 关联地址
-```
-
-如果当前 spec level 没有任何合法槽位：
-
-```text
-SPEC_LEVEL_3 → 2 → 1 → 0
-```
-
-所有级别都失败后，调用原来的 `ApplyFailStrategy` 回滚前面若干 SE，再继续规划。
-
-对应实现位于 [PlanMemory.cpp](/home/VSCode/AscendNPU-IR/bishengir/lib/Dialect/HIVM/Transforms/regbase/PlanMemory.cpp:2819)。
-
-整体关系是：
-
-```text
-DSATUR：决定下一个分配谁
-Best-Fit：决定它放在哪里
-MultiSpec：决定使用哪一级约束
-Rollback：当前固定顺序失败时，回退前序布局
-```
 
 ### 3. 扩展 Verifier --低
 
