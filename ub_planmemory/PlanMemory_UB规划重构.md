@@ -1,3 +1,66 @@
+# 当前 PlanMemory 新算法实现
+
+```text
+PlanMemoryPass
+└─ PlanMemoryForFuncOp
+   └─ PlanWithPolicies
+      ├─ 保留原有三档 PlanningPolicy
+      │  ├─ 默认规划
+      │  ├─ 移除 AIV MultiBufferAttr
+      │  └─ 禁用 VF reachable check
+      └─ RunGraphOrderedFirstFitPolicy：每个 policy 只执行一次，不再做 ordering attempt
+         ├─ ApplyPlanningPolicy：应用当前 policy
+         ├─ PlanningInputBuilder::BuildFixedInput
+         │  └─ MemLivenessAnalysisRegBase
+         │     ├─ 按确定性顺序遍历 IR
+         │     ├─ 收集 bufferInfos、alias/inplace 关系
+         │     ├─ 建立 genKillMap 和 buffer2Life
+         │     ├─ 收集 MultiBuffer、同步点、线性 operation 顺序
+         │     └─ 形成固定的 MemoryPlanningInput / PlanningWorkingSet
+         └─ RunMemoryPlan
+            └─ MemPlanRegBase
+               ├─ 根据 liveness 结果建立 StorageEntry
+               ├─ PlanLocalMemAddress
+               │  ├─ MergeGlobalInplaceSE
+               │  │  ├─ 必须同址的 alias buffer 直接合并 -> inplacePairList
+               │  │  └─ 对可选 inplace 候选评估全局冲突代价和节省容量，再选择合并 -> 保留16组状态组合：已选择的 inplace pair多、累计新增冲突容量少、累计节省容量多。
+               │  ├─ ExpandMultiBufferStorageEntry：展开 MultiBuffer
+               │  ├─ MergeSameScopeSE：按 UB / L1 / L0C 合并为各物理空间 root
+               │  └─ PlanMemAddressWithGraphOrderedFirstFit
+               │     ├─ 无需复用的空间沿用原有确定性布局
+               │     ├─ 需要复用的空间构建 StorageEntry 冲突图
+               │     ├─ BuildDSaturStorageEntryOrder
+               │     │  └─ 按 DSATUR 评分选择 group/SE，生成与输入顺序无关的规划顺序
+               │     ├─ InstallStorageEntryOrder：把新顺序安装到对应 memScope root
+               │     └─ PlanMemAddressOfWholeLocalBuffer
+               │        └─ MultiSpecPlan / SpecAlloc
+               │           ├─ 按 spec_level 从高到低尝试约束
+               │           ├─ SpecAlloc 沿 outline 低地址扫描，执行原有 First-Fit 放置
+               │           └─ 分配失败时沿用 ApplyFailStrategy 和 rollback
+               └─ 规划成功后返回 buffer2Offsets
+```
+
+当前新算法只改变两处：一是从全局收益出发选择 optional inplace 合并；二是利用冲突图和 DSATUR 确定 StorageEntry 输入顺序。实际物理地址放置仍复用原有的 First-Fit、MultiSpec 和 rollback 机制。
+
+## 存在的问题
+1、当前分支里 optionalInplaceEntryPairs 实际为空
+2、DSATUR排序的规则需要考量
+    DSATUR 不是一次性排序，而是每轮从未选择的 group 中选一个。当前字典序优先级是：
+    1. saturation 大：当前节点所有“已经着色的冲突邻居”所使用的不同颜色数量。
+    2. weightedConflictBytes 大：冲突涉及的容量更大。
+    3. groupBytes 大：group 本身容量更大。
+    4. selectedOptionalGain 大。
+    5. totalOptionalGain 大。
+    6. reuseCandidateCount 小：可复用对象更少。
+    7. liveTicks 大：生命周期更长。
+    8. pipelineRank 小：memoryUnique → DMA → normal → scalar。
+    9. degree 大：冲突邻居更多。
+    10. canonicalIndex 小：作为确定性兜底。
+    选中后，为它分配未被冲突邻居使用的最小颜色，并进入最终的 StorageEntry 顺序。
+    第一轮所有节点的 saturation=0，因此通常先比较 weightedConflictBytes。
+
+---
+
 # 重构规划
 DSATUR 系统化选择节点，减少输入顺序依赖。
 Best-Fit 比 First-Fit 更充分地比较候选地址。
