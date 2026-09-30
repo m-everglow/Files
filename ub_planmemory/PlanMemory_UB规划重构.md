@@ -1,3 +1,94 @@
+# 2阶段目标
+## 1、优化attempt->genKillMap的随机扰动+贪心合并inplace以获取StorageEntry输入
+
+### 新的实现
+一次确定性 Liveness
+    ↓
+合并 mandatory alias
+    ↓
+收集全部 optional inplace 候选
+    ↓
+枚举全部合法 optional inplace 状态
+    ↓
+每个状态生成一套 StorageEntry 集合
+    ↓
+评估容量是否满足、冲突代价和 pipeline 风险
+    ↓
+选择最优 StorageEntry 集合
+    ↓
+阶段2：优化这套 StorageEntry 的处理顺序
+    ↓
+原有 first-fit + MultiSpec
+
+### 评估标准
+先过滤非法状态，然后为每个合法状态生成：
+
+```text
+Score = (
+  CapacityPenalty,
+  PipelineRisk,
+  AddedConflictBytes,
+  MaxNodeConflictPressure,
+  OptionalMergeCount,
+  StablePairIds
+)
+```
+
+所有字段按从小到大比较。
+
+其中：
+
+```text
+OverflowRatio(scope)
+  = max(0, PeakLiveBits - Capacity) / Capacity
+```
+
+```text
+CapacityPenalty = (
+  OverflowScopeCount,
+  MaxOverflowRatio,
+  SumOverflowRatio
+)
+```
+
+因此：
+
+- 容量全部满足时，`CapacityPenalty = (0, 0, 0)`；
+- 容量满足的状态之间，不再比较峰值大小；
+- 存在 overflow 时，自动优先 overflow scope 更少、比例更低的状态。
+
+完整统一规则：
+
+```text
+1. 非法状态直接排除
+2. CapacityPenalty 更小
+3. PipelineRisk 更低
+4. AddedConflictBytes 更小
+5. MaxNodeConflictPressure 更小
+6. OptionalMergeCount 更少
+7. StablePairIds 更小
+```
+
+例如：
+
+```text
+状态A：Peak=250KB，Capacity=256KB
+CapacityPenalty=(0,0,0)
+
+状态B：Peak=220KB，Capacity=256KB
+CapacityPenalty=(0,0,0)
+```
+
+A、B 在容量指标上完全相同，继续比较 pipeline 风险和冲突代价，不会因为 B 的峰值更小就优先选 B。
+
+这样就是一套统一、确定性的比较标准。
+
+## 2、优化StorageEntry处理顺序 -> DSATUR等算法
+确定的 StorageEntry 集合
+    ↓
+优化 StorageEntry 地址分配顺序
+
+
 # 当前 PlanMemory 新算法实现
 
 ```text
@@ -41,6 +132,12 @@ PlanMemoryPass
 ```
 
 当前新算法只改变两处：一是从全局收益出发选择 optional inplace 合并；二是利用冲突图和 DSATUR 确定 StorageEntry 输入顺序。实际物理地址放置仍复用原有的 First-Fit、MultiSpec 和 rollback 机制。
+
+## 分析目标:
+1、编译时长分析
+2、优化原因分析
+3、劣化原因分析
+
 
 ## 存在的问题
 1、当前分支里 optionalInplaceEntryPairs 实际为空
