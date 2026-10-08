@@ -89,7 +89,7 @@ A、B 在容量指标上完全相同，继续比较 pipeline 风险和冲突代�
 优化 StorageEntry 地址分配顺序
 
 
-# 当前 PlanMemory 新算法实现
+# 当前 PlanMemory 新算法实现: Beam Search + DSATUR
 
 ```text
 PlanMemoryPass
@@ -132,6 +132,11 @@ PlanMemoryPass
 ```
 
 当前新算法只改变两处：一是从全局收益出发选择 optional inplace 合并；二是利用冲突图和 DSATUR 确定 StorageEntry 输入顺序。实际物理地址放置仍复用原有的 First-Fit、MultiSpec 和 rollback 机制。
+
+## 遗留问题
+1、beam search有没有考虑OP之间的影响，也就是全局信息？
+
+2、考虑了全局信息，width=16是不是不能解决该问题？
 
 ## 分析目标:
 1、编译时长分析
