@@ -1,4 +1,18 @@
-# 2阶段目标
+# 当前方案
+
+## 流程
+输入 IR
+Livess -> no attempt
+MergeInplaceSE -> 对单条 OP 决定 optional inplace 复用与否
+SE 处理顺序 -> DSATUR
+原有分配流程
+
+## 测试方案
+测试范围: mojo 代码仓
+方式：统计 kernel_name, case用例, 当前性能, stable性能, 浮动比例, 是否劣化(超过 2us 或者 2% 算劣化) 信息，用 csv 文件保存（一个 kernel 对应多个 case 的多行）
+
+
+# 2 阶段目标
 ## 1、优化attempt->genKillMap的随机扰动+贪心合并inplace以获取StorageEntry输入
 
 ### 新的实现
