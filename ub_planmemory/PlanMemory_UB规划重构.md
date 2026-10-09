@@ -7,9 +7,34 @@ MergeInplaceSE -> 对单条 OP 决定 optional inplace 复用与否
 SE 处理顺序 -> DSATUR
 原有分配流程
 
+## 具体方案
+
+# MergeInpalceSE
+
+完整规则可以定为“**单 op 内选一组 optional inplace，立即合并；下一个 op 在已合并的 SE 上继续**”。只改 inplace 选择，不改后续 DSATUR 排序、first-fit 和 MultiSpec 回退。
+
+1. **准备候选**：先按原规则处理必须同址的 alias。对当前 op 的 `gen × kill` 生成 optional pair，沿用现有合法性检查；已属于同一 SE 的 buffer 按 SE 去重。
+
+2. **生成方案**：合法方案是一组互不争用的 pair——同一个 gen 或 kill 不能被选两次。“一个都不选”也算方案。此时只在临时状态中模拟合并，**不修改正式 SE**。
+
+3. **计算每个完整方案的四项信息**：
+   - `OverflowRisk`：合并后估算容量超过 UB 上限多少；未超过都记 0，不奖励继续降低峰值。
+   - `AddedConflict`：合并造成的冲突边权重增量。
+   - `SizeMismatch`：小 buffer 使用较大 SE 的尺寸差，作为偏好，不当成实际 UB 浪费。
+   - `SavedSize`：合并前后 SE 大小之和的差。
+
+4. **按合并对数分层保留**：5×5 时，`k=0` 留唯一方案，`k=1…5` 每层最多留 3 个：分别是该层“超限风险最低、冲突增量最小、节省容量最多”的方案。去重后不足 3 个，再按上述四项的比较顺序补齐。相同结果用稳定 ID 裁决，不随机。5×5 可先完整枚举；更大的 op 再限制搜索预算。
+
+5. **从保留方案中只选一个**，按字典序比较：`OverflowRisk 小 → AddedConflict 小 → SizeMismatch 小 → SavedSize 大 → 稳定 ID 小`。例如 B→C 与不合并都没有超限、新增冲突和尺寸不匹配时，B→C 因节省 32B 胜出；B→A 若增加了冲突，则不会仅因同样节省 32B 而胜出。
+
+6. **正式合并并处理下一个 op**。全部 op 完成后，只运行一次后续 SE 排序和原有地址分配。
+
+这是一套**确定、编译成本有界的局部启发式**，不是全局最优保证。尤其 `OverflowRisk=0` 只表示估算未超容量，不保证 first-fit 一定能放下；先用真实 IR 验证它比旧的贪心选择是否更稳，再调整评分顺序。
+
+
 ## 测试方案
 测试范围: mojo 代码仓
-方式：统计 kernel_name, case用例, 当前性能, stable性能, 浮动比例, 是否劣化(超过 2us 或者 2% 算劣化) 信息，用 csv 文件保存（一个 kernel 对应多个 case 的多行）
+方式：统计 kernel_name, case用例, 当前性能, stable性能, 浮动比例, 劣化情况(性能下降 2us 或者 2% 算劣化，提升超过 2us 或 2% 算优化，范围内算波动) 信息，用 csv 文件保存（一个 kernel 对应多个 case 的多行）
 
 
 # 2 阶段目标
