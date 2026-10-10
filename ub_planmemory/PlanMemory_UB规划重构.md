@@ -23,7 +23,7 @@ SE 处理顺序 -> DSATUR
    - `SizeMismatch`：小 buffer 使用较大 SE 的尺寸差，作为偏好，不当成实际 UB 浪费。
    - `SavedSize`：合并前后 SE 大小之和的差。
 
-4. **按合并对数分层保留**：5×5 时，`k=0` 留唯一方案，`k=1…5` 每层最多留 3 个：分别是该层“超限风险最低、冲突增量最小、节省容量最多”的方案。去重后不足 3 个，再按上述四项的比较顺序补齐。相同结果用稳定 ID 裁决，不随机。5×5 可先完整枚举；更大的 op 再限制搜索预算。
+4. **按合并对数分层保留**：先枚举单个 op 的合法配对组合，对每个完整组合评分；然后按合并对数 k 分层，k=0 保留不合并方案，其余每层最多保留 3 个，分别是该层“超限风险最低、冲突增量最小、节省容量最多”的方案。枚举上限是 4096 个状态，候选总上限是 16 个。
 
 5. **从保留方案中只选一个**，按字典序比较：`OverflowRisk 小 → AddedConflict 小 → SizeMismatch 小 → SavedSize 大 → 稳定 ID 小`。例如 B→C 与不合并都没有超限、新增冲突和尺寸不匹配时，B→C 因节省 32B 胜出；B→A 若增加了冲突，则不会仅因同样节省 32B 而胜出。
 
@@ -35,6 +35,24 @@ SE 处理顺序 -> DSATUR
 ## 测试方案
 测试范围: mojo 代码仓
 方式：统计 kernel_name, case用例, 当前性能, stable性能, 浮动比例, 劣化情况(性能下降 2us 或者 2% 算劣化，提升超过 2us 或 2% 算优化，范围内算波动) 信息，用 csv 文件保存（一个 kernel 对应多个 case 的多行）
+
+1）功能结果：所有用例功能通过
+2）性能结果：352 条波动、12 条劣化、6 条提升
+10.10：
+1) _gelu_fwd_kernel,mojo_opset/tests/perf/test_activation.py::test_gelu[x1],22.530,15.507,+45.29,劣化 
+复测结论：无劣化
+| GELU 配置 | 第一轮 stable→current | 第二轮 stable→current |
+| `8192` | 18.671→18.000 μs | 19.092→14.873 μs |
+| `16384` | 18.844→18.569 μs | 16.888→18.646 μs |
+autotune不稳定。固定相同 autotune 配置后，未复现超阈值劣化。
+
+2) _int8_gemm_dequant_kernel,mojo_opset/tests/perf/test_gemm_dequant.py::test_quant_gemm_perf[x_i88-w_i88-x_scale8-w_scale8-output_dtype8-False],30.926,26.399,+17.15,劣化
+复测结论：无劣化
+两轮分别为 34.27→32.19 μs（新版更快）、30.73→32.88 μs（新版慢 7.0%）。但两轮选中的 autotune 配置不同，结果方向反转，没有复现稳定劣化；
+
+3) _sdpa_infer_kernel,mojo_opset/tests/perf/test_attention.py::test_sdpa[query0-key0-value0-blockwise_diffusion_attn_mask0-True],4225.846,3975.680,+6.29,劣化
+复测结论：无劣化
+两轮分别为 4195.9→4222.7 μs（慢 0.64%，阈值内）、4246.9→4136.3 μs（新版更快）。autotune 配置相同，此前 PlanMemory 输出 IR 也已确认相同。
 
 
 # 2 阶段目标
