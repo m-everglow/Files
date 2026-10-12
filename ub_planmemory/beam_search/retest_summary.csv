@@ -1,0 +1,13 @@
+index,kernel_name,case,round1,round2,verdict
+1,_gelu_fwd_kernel,mojo_opset/tests/perf/test_activation.py::test_gelu[x1],波动,波动,两轮均无劣化
+2,_int8_gemm_dequant_kernel,mojo_opset/tests/perf/test_gemm_dequant.py::test_quant_gemm_perf[x_i88-w_i88-x_scale8-w_scale8-output_dtype8-False],波动,波动,两轮均无劣化
+3,_sdpa_infer_kernel,mojo_opset/tests/perf/test_attention.py::test_sdpa[query0-key0-value0-blockwise_diffusion_attn_mask0-True],波动,劣化,仅一轮劣化，未稳定复现
+4,_silu_fwd_flatten_kernel,mojo_opset/tests/perf/test_activation.py::test_silu[x3],提升,劣化,仅一轮劣化，未稳定复现
+5,_silu_fwd_flatten_kernel,mojo_opset/tests/perf/test_activation.py::test_silu_forward_backward_diff[shape1],提升,劣化,仅一轮劣化，未稳定复现
+6,_silu_fwd_flatten_kernel,mojo_opset/tests/perf/test_activation.py::test_silu_forward_backward_diff[shape2],提升,劣化,仅一轮劣化，未稳定复现
+7,_swa_bwd_preprocess,mojo_opset/tests/perf/test_attention_swa_mfu.py::test_swa_function_perf[False-4-1023-M_BF16_4096],提升,波动,两轮均无劣化
+8,_swa_bwd_preprocess,mojo_opset/tests/perf/test_attention_swa_mfu.py::test_swa_function_perf[False-4-1023-M_BF16_8192],提升,劣化,仅一轮劣化，未稳定复现
+9,flex_attention_kernel,mojo_opset/tests/perf/test_flex_attention_mfu.py::test_flex_attention_perf[cross_2000_22000],提升,波动,两轮均无劣化
+10,kernel_sdpa_bwd_d,mojo_opset/tests/perf/test_sdpa_impl.py::test_sdpa_impl[1-5-1-128-2048-32],波动,波动,两轮均无劣化
+11,kernel_sdpa_bwd_d,mojo_opset/tests/perf/test_sdpa_impl.py::test_sdpa_impl[1-8-2-128-8192-32],波动,波动,两轮均无劣化
+12,lightning_indexer_kernel,mojo_opset/tests/perf/test_indexer.py::test_lightning_index[query7-query_scale7-key7-key_scale7],波动,波动,两轮均无劣化

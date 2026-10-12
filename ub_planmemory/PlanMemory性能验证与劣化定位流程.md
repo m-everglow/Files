@@ -2,8 +2,9 @@
 
 ## 基本口径
 
-- 在 950-ide 上编译、运行。先确认 NPU 健康且空闲；同一组 stable/current 用同一张卡，顺序执行，必要时换健康卡复测。
+- 在 950-ide 上编译、运行。先确认所选 NPU 均健康且空闲；可以多张卡并行，但**同一 case 在所有轮次必须固定到同一卡**。每批结束后重新检查卡的健康/占用状态。
 - 两版分别使用保存的 `bishengir-compile`，运行前用 `which bishengir-compile` 和 SHA256 核对。保留各自独立的 `TRITON_CACHE_DIR`。
+- 复测采用**整批固定组件**：12 条 case 全跑 stable-1，再全跑 current-1、current-2、stable-2。每个批次只使用一个版本的 NPU-IR，批次间才切换 `PATH`；不能每条 case 跑完就切一次组件。多卡分工在四批之间保持不变，并记录 case→卡号映射。
 - 每次 pytest 设置 `TRITON_ALWAYS_COMPILE=1 TRITON_DEBUG=1 TRITON_PRINT_AUTOTUNING=1`，不能让旧缓存掩盖编译或 autotune 差异。
 - 同一轮比较必须采用同一种计时来源（例如 profiler 的 `Avg Time(us)`，或同一测试日志的 `Device latency`）；不要把两种来源直接拼成一对。
 - 判定阈值：绝对变化在 2 μs 以内，或相对变化在 2% 以内，视为波动；两项都超阈值才记为劣化/优化。单次超阈值还需复测，不能直接归因。
@@ -16,7 +17,7 @@
   └─ 原始 autotune 配置是否相同？
      ├─ 不同
      │  ├─ 查每档编译失败、UB overflow、候选计时及最终选型
-     │  ├─ 同卡交替复测（stable→current→current→stable），观察同一版本是否也换选型
+     │  ├─ 按整批 stable→current→current→stable 复测，同一 case 四批固定同卡；观察同一版本是否也换选型
      │  └─ 分别固定关键配置，对同一配置比较性能与 PlanMemory 输出 IR
      └─ 相同
         └─ 确认输入 bcmlir 相同；比较 PlanMemory 输出 IR
@@ -29,7 +30,7 @@
 ## 操作要点
 
 1. 先从 pytest 日志的 `TRITON_PRINT_AUTOTUNING` 找最终配置，从 `TRITON_DEBUG` 找对应的 `bishengir-compile` 命令和 `.bcmlir`；配置不同不能直接比较两版地址规划的性能效果。
-2. 固定 autotune 时只临时屏蔽其他候选，测试脚本须用退出清理逻辑恢复源码；结束后核对 `git status`。固定每档分别运行两版，优先用 stable→current→current→stable 顺序、隔离缓存。
+2. 12 条疑似劣化 case 用 `beam_search/run_degraded_12_perf_cases.sh --cards 1,2,3,4,6,7` 复测；卡号须按当时 `npu-smi info` 的健康/空闲情况选择，不能照搬示例。脚本按稳定的 case→卡号映射多卡并行，四个批次各自完成后才切换组件；每次单独缓存、强制重新编译，并保存编译器 SHA256、pytest 日志、profiler 数据和 `summary.tsv`。如批次间某张卡被其他进程占用，先停止、等该卡恢复空闲，再用相同 `--cards` 加 `--resume <结果目录>` 续跑完整的下一批；不可临时改该 case 的卡号。固定 autotune 时只临时屏蔽其他候选，测试脚本须用退出清理逻辑恢复源码；结束后核对 `git status`。
 3. 用相同 `.bcmlir` 和原编译参数，加 `--mlir-print-ir-before-all --mlir-print-ir-after-all` 复放；按每次 PlanMemory pass 的输入/输出 IR 对比。**不能用 npubin 相同代替 IR 对比。** 最终 IR 若只差外部组件绝对路径，应注明路径差异。
 4. `wait_flag/set_flag` 由 PlanMemory 后续的 GraphSyncSolver 插入；核间同步 `sync_block_set/sync_block_wait` 则另行区分。比较同步操作时检查具体增删/位置，不只看整份 dump 的哈希。
 5. 即使 PlanMemory 输出地址变了，也要在**相同配置**下证明性能稳定劣化，才能把该 case 的性能问题归因于地址变化。反过来，若某些 autotune 候选因新版 PlanMemory 编译失败，应查失败原因，不能简单当环境波动。
