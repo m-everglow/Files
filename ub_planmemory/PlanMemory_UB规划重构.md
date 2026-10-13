@@ -38,22 +38,12 @@ SE 处理顺序 -> DSATUR
 
 1）功能结果：所有用例功能通过
 2）性能结果：352 条波动、12 条劣化、6 条提升
-10.10：
-1) _gelu_fwd_kernel,mojo_opset/tests/perf/test_activation.py::test_gelu[x1],22.530,15.507,+45.29,劣化 
-复测结论：无劣化
-| GELU 配置 | 第一轮 stable→current | 第二轮 stable→current |
-| `8192` | 18.671→18.000 μs | 19.092→14.873 μs |
-| `16384` | 18.844→18.569 μs | 16.888→18.646 μs |
-autotune不稳定。固定相同 autotune 配置后，未复现超阈值劣化。
 
-2) _int8_gemm_dequant_kernel,mojo_opset/tests/perf/test_gemm_dequant.py::test_quant_gemm_perf[x_i88-w_i88-x_scale8-w_scale8-output_dtype8-False],30.926,26.399,+17.15,劣化
-复测结论：无劣化
-两轮分别为 34.27→32.19 μs（新版更快）、30.73→32.88 μs（新版慢 7.0%）。但两轮选中的 autotune 配置不同，结果方向反转，没有复现稳定劣化；
-
-3) _sdpa_infer_kernel,mojo_opset/tests/perf/test_attention.py::test_sdpa[query0-key0-value0-blockwise_diffusion_attn_mask0-True],4225.846,3975.680,+6.29,劣化
-复测结论：无劣化
-两轮分别为 4195.9→4222.7 μs（慢 0.64%，阈值内）、4246.9→4136.3 μs（新版更快）。autotune 配置相同，此前 PlanMemory 输出 IR 也已确认相同。
-
+指标：
+1）编译时长：整体时长、planmemory时长 -> mojo
+2）mojo劣化提升分析：劣化用例复测后无劣化，提升用例复测后...
+3）性能测试：UB不够用，要回退的算子 -> 大tiling用例
+4）泛化测试：mojo等算子库，性能不劣化 -> 目前mojo不劣化
 
 # 2 阶段目标
 ## 1、优化attempt->genKillMap的随机扰动+贪心合并inplace以获取StorageEntry输入

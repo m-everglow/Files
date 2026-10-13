@@ -1,0 +1,7 @@
+kernel_name,case,card,original_classification,stable_mean_us,current_mean_us,delta_us,delta_percent,classification
+_rmsnorm_fwd_kernel,mojo_opset/tests/perf/test_normalization.py::test_rmsnorm_forward_backward_diff[x10-weight10],0,提升,22.492,20.587,-1.905,-8.47,波动
+_rmsnorm_fwd_kernel,mojo_opset/tests/perf/test_normalization.py::test_rmsnorm_forward_backward_diff[x5-weight5],0,提升,903.905,873.739,-30.166,-3.34,提升
+_rope_kernel,mojo_opset/tests/perf/test_position_embedding.py::test_pos_emb[dtype1-128-1-1-8192-32],4,提升,186.269,186.416,+0.147,+0.08,波动
+_rope_kernel,mojo_opset/tests/perf/test_position_embedding.py::test_pos_emb[dtype2-128-1-1-8192-32],4,提升,186.512,187.346,+0.834,+0.45,波动
+_silu_bwd_flatten_kernel,mojo_opset/tests/perf/test_activation.py::test_silu_forward_backward_diff[shape1],5,提升,44.694,35.217,-9.477,-21.21,提升
+_silu_bwd_flatten_kernel,mojo_opset/tests/perf/test_activation.py::test_silu_forward_backward_diff[shape2],5,提升,52.219,46.127,-6.093,-11.67,提升
