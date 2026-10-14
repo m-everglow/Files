@@ -41,3 +41,14 @@ SwiGLU 是比 GELU 更复杂、同时满足“stable 多次 attempt 才成功且
 - SwiGLU 逐轮数据：`/home/m00953828/mojo/mojo_data/planmemory_swiglu_retry_bench_20261013.csv`
 - Flex Attention 输入：`/home/m00953828/mojo/mojo_data/planmemory_complex_scan_20261013_092405/flex_backward_dkdv/before-planmemory-3.mlir`
 - Flex Attention 逐轮数据：`/home/m00953828/mojo/mojo_data/planmemory_flex_backward_bench_20261013.csv`
+
+# SwiGLU forward的耗时为什么不是3/7 ?
+
+主要因为 **每次 attempt 的耗时不一样，第一次明显更贵**。
+
+- stable：第一次 **309µs**，后六次合计 **594µs**，轮外工作 **77µs**。
+- current：第一次 **294µs**，后两次合计 **234µs**，轮外工作 **63µs**。
+
+省掉的四次是每次约100µs的重复执行，**不是把七份同样的工作删掉四份**。较贵的首次执行仍然保留，所以总耗时是 **980→590µs（约60%）**，而不是变成3/7（约43%）。
+
+首次为什么更贵，还没细分查清；但它是目前实测中不能按3/7折算的主要原因。
