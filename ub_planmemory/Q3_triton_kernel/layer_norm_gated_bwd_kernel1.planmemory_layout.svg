@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1170" viewBox="0 0 1400 1170">
+<rect width="1400" height="1170" fill="white"/>
+<style>text{font-family:Consolas,DejaVu Sans Mono,monospace;fill:#17243b} .small{font-size:13px} .label{font-size:15px} .title{font-size:21px;font-weight:600}</style>
+<text x="40.00" y="36.00" class="title" >SSA allocation comparison: stable attempt 1 vs current</text>
+<text x="40.00" y="62.00" class="small" >Same before-PlanMemory IR. Rectangles use logged liveness and address ranges.</text>
+<rect x="40.00" y="83.00" width="16.00" height="14.00" fill="#e4e9ef" stroke="white" opacity="1"/>
+<text x="63.00" y="95.00" class="small" >Other StorageEntries</text>
+<rect x="310.00" y="83.00" width="16.00" height="14.00" fill="#fed7aa" stroke="white" opacity="1"/>
+<text x="333.00" y="95.00" class="small" >%alloc_45 / merged group</text>
+<rect x="580.00" y="83.00" width="16.00" height="14.00" fill="#a7f3d0" stroke="white" opacity="1"/>
+<text x="603.00" y="95.00" class="small" >%alloc_28</text>
+<rect x="850.00" y="83.00" width="16.00" height="14.00" fill="#93c5fd" stroke="white" opacity="1"/>
+<text x="873.00" y="95.00" class="small" >%alloc_69</text>
+<rect x="1120.00" y="83.00" width="16.00" height="14.00" fill="#fca5a5" stroke="white" opacity="1"/>
+<text x="1143.00" y="95.00" class="small" >Failed allocation</text>
+<text x="115.00" y="133.00" class="title" >stable attempt 1: merged %alloc_45 + %alloc_69; allocation fails</text>
+<rect x="115.00" y="153.00" width="1080.00" height="78.75" fill="#fff1f2" stroke="none" opacity="1"/>
+<line x1="115.00" y1="503.00" x2="1195.00" y2="503.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="507.00" class="small" text-anchor="end">0</text>
+<line x1="115.00" y1="468.00" x2="1195.00" y2="468.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="472.00" class="small" text-anchor="end">32</text>
+<line x1="115.00" y1="433.00" x2="1195.00" y2="433.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="437.00" class="small" text-anchor="end">64</text>
+<line x1="115.00" y1="398.00" x2="1195.00" y2="398.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="402.00" class="small" text-anchor="end">96</text>
+<line x1="115.00" y1="363.00" x2="1195.00" y2="363.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="367.00" class="small" text-anchor="end">128</text>
+<line x1="115.00" y1="328.00" x2="1195.00" y2="328.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="332.00" class="small" text-anchor="end">160</text>
+<line x1="115.00" y1="293.00" x2="1195.00" y2="293.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="297.00" class="small" text-anchor="end">192</text>
+<line x1="115.00" y1="258.00" x2="1195.00" y2="258.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="262.00" class="small" text-anchor="end">224</text>
+<line x1="115.00" y1="231.75" x2="1195.00" y2="231.75" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="235.75" class="small" text-anchor="end">248</text>
+<line x1="115.00" y1="188.00" x2="1195.00" y2="188.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="192.00" class="small" text-anchor="end">288</text>
+<line x1="115.00" y1="153.00" x2="1195.00" y2="153.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="157.00" class="small" text-anchor="end">320</text>
+<line x1="138.14" y1="153.00" x2="138.14" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="138.14" y="524.00" class="small" text-anchor="middle">43</text>
+<line x1="361.86" y1="153.00" x2="361.86" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="361.86" y="524.00" class="small" text-anchor="middle">72</text>
+<line x1="624.14" y1="153.00" x2="624.14" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="624.14" y="524.00" class="small" text-anchor="middle">106</text>
+<line x1="716.71" y1="153.00" x2="716.71" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="716.71" y="524.00" class="small" text-anchor="middle">118</text>
+<line x1="909.57" y1="153.00" x2="909.57" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="909.57" y="524.00" class="small" text-anchor="middle">143</text>
+<line x1="955.86" y1="153.00" x2="955.86" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="955.86" y="524.00" class="small" text-anchor="middle">149</text>
+<line x1="1110.14" y1="153.00" x2="1110.14" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="1110.14" y="524.00" class="small" text-anchor="middle">169</text>
+<line x1="1164.14" y1="153.00" x2="1164.14" y2="503.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="1164.14" y="524.00" class="small" text-anchor="middle">176</text>
+<text x="20.00" y="303.00" class="label" >UB</text>
+<text x="20.00" y="323.00" class="label" >(KiB)</text>
+<text x="655.00" y="548.00" class="small" text-anchor="middle">Linear op index (not elapsed time)</text>
+<rect x="115.00" y="489.88" width="902.57" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="485.50" width="902.57" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="315.57" y="468.00" width="354.86" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="315.57" y="450.50" width="354.86" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="408.14" y="398.00" width="308.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="408.14" y="380.50" width="308.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="477.57" y="498.59" width="146.57" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="477.57" y="502.97" width="146.57" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="562.43" y="502.93" width="61.71" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="562.43" y="502.90" width="61.71" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="450.50" width="285.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="468.00" width="285.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1079.29" y="498.62" width="54.00" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1079.29" y="494.25" width="54.00" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1102.43" y="489.88" width="61.71" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1102.43" y="485.50" width="61.71" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="328.00" width="902.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="310.50" width="902.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="624.14" y="293.00" width="331.71" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="275.50" width="2.00" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="258.00" width="239.14" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="240.50" width="100.29" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="786.14" y="433.00" width="123.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="847.86" y="415.50" width="61.71" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="361.86" y="433.00" width="354.86" height="17.50" fill="#a7f3d0" stroke="#ffffff" opacity="1"/>
+<rect x="361.86" y="415.50" width="354.86" height="17.50" fill="#a7f3d0" stroke="#ffffff" opacity="1"/>
+<rect x="655.00" y="363.00" width="324.00" height="17.50" fill="#fed7aa" stroke="#ffffff" opacity="1"/>
+<rect x="655.00" y="345.50" width="324.00" height="17.50" fill="#fed7aa" stroke="#ffffff" opacity="1"/>
+<rect x="138.14" y="170.36" width="972.00" height="17.50" fill="#fca5a5" stroke="#ffffff" opacity="1"/>
+<line x1="115.00" y1="231.75" x2="1195.00" y2="231.75" stroke="#dc2626" stroke-width="2" stroke-dasharray="7 4"/>
+<text x="1209.00" y="236.75" class="small" >UB limit: 248 KiB</text>
+<text x="169.00" y="184.11" class="label" >%alloc_7 + %alloc_64: FAIL [288.125, 304.125) KiB</text>
+<text x="670.43" y="368.00" class="label" >%alloc_45 + %alloc_69</text>
+<text x="670.43" y="386.00" class="small" >2 slots; life [110,152]</text>
+<text x="115.00" y="575.00" class="label" >The merged group reserves 2 x 16 KiB from op 110.</text>
+<text x="115.00" y="658.00" class="title" >current: separate %alloc_45 and %alloc_69; address upper bound 248 KiB</text>
+<rect x="115.00" y="678.00" width="1080.00" height="78.75" fill="#fff1f2" stroke="none" opacity="1"/>
+<line x1="115.00" y1="1028.00" x2="1195.00" y2="1028.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="1032.00" class="small" text-anchor="end">0</text>
+<line x1="115.00" y1="993.00" x2="1195.00" y2="993.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="997.00" class="small" text-anchor="end">32</text>
+<line x1="115.00" y1="958.00" x2="1195.00" y2="958.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="962.00" class="small" text-anchor="end">64</text>
+<line x1="115.00" y1="923.00" x2="1195.00" y2="923.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="927.00" class="small" text-anchor="end">96</text>
+<line x1="115.00" y1="888.00" x2="1195.00" y2="888.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="892.00" class="small" text-anchor="end">128</text>
+<line x1="115.00" y1="853.00" x2="1195.00" y2="853.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="857.00" class="small" text-anchor="end">160</text>
+<line x1="115.00" y1="818.00" x2="1195.00" y2="818.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="822.00" class="small" text-anchor="end">192</text>
+<line x1="115.00" y1="783.00" x2="1195.00" y2="783.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="787.00" class="small" text-anchor="end">224</text>
+<line x1="115.00" y1="756.75" x2="1195.00" y2="756.75" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="760.75" class="small" text-anchor="end">248</text>
+<line x1="115.00" y1="713.00" x2="1195.00" y2="713.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="717.00" class="small" text-anchor="end">288</text>
+<line x1="115.00" y1="678.00" x2="1195.00" y2="678.00" stroke="#d8dee9" stroke-width="1" stroke-dasharray=""/>
+<text x="101.00" y="682.00" class="small" text-anchor="end">320</text>
+<line x1="138.14" y1="678.00" x2="138.14" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="138.14" y="1049.00" class="small" text-anchor="middle">43</text>
+<line x1="361.86" y1="678.00" x2="361.86" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="361.86" y="1049.00" class="small" text-anchor="middle">72</text>
+<line x1="624.14" y1="678.00" x2="624.14" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="624.14" y="1049.00" class="small" text-anchor="middle">106</text>
+<line x1="716.71" y1="678.00" x2="716.71" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="716.71" y="1049.00" class="small" text-anchor="middle">118</text>
+<line x1="909.57" y1="678.00" x2="909.57" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="909.57" y="1049.00" class="small" text-anchor="middle">143</text>
+<line x1="955.86" y1="678.00" x2="955.86" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="955.86" y="1049.00" class="small" text-anchor="middle">149</text>
+<line x1="1110.14" y1="678.00" x2="1110.14" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="1110.14" y="1049.00" class="small" text-anchor="middle">169</text>
+<line x1="1164.14" y1="678.00" x2="1164.14" y2="1028.00" stroke="#edf0f5" stroke-width="1" stroke-dasharray=""/>
+<text x="1164.14" y="1049.00" class="small" text-anchor="middle">176</text>
+<text x="20.00" y="828.00" class="label" >UB</text>
+<text x="20.00" y="848.00" class="label" >(KiB)</text>
+<text x="655.00" y="1073.00" class="small" text-anchor="middle">Linear op index (not elapsed time)</text>
+<rect x="716.71" y="1010.50" width="285.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="993.00" width="285.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="408.14" y="940.50" width="308.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="408.14" y="923.00" width="308.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="315.57" y="905.50" width="354.86" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="315.57" y="888.00" width="354.86" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="835.50" width="902.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="818.00" width="902.57" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="624.14" y="800.50" width="331.71" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="765.50" width="239.14" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="888.00" width="100.29" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="716.71" y="905.50" width="2.00" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="786.14" y="975.50" width="123.43" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="847.86" y="940.50" width="61.71" height="17.50" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="761.12" width="902.57" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="115.00" y="756.75" width="902.57" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1102.43" y="1023.62" width="61.71" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1102.43" y="1019.25" width="61.71" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1079.29" y="1014.88" width="54.00" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1079.29" y="1010.50" width="54.00" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="477.57" y="1027.97" width="146.57" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="477.57" y="1027.93" width="146.57" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="562.43" y="1027.90" width="61.71" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="562.43" y="1027.86" width="61.71" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="932.71" y="957.97" width="23.14" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="932.71" y="957.93" width="23.14" height="1.00" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="1056.14" y="848.62" width="46.29" height="4.38" fill="#e4e9ef" stroke="#ffffff" opacity="1"/>
+<rect x="361.86" y="975.50" width="354.86" height="17.50" fill="#a7f3d0" stroke="#ffffff" opacity="1"/>
+<rect x="361.86" y="958.00" width="354.86" height="17.50" fill="#a7f3d0" stroke="#ffffff" opacity="1"/>
+<rect x="955.86" y="975.50" width="23.14" height="17.50" fill="#93c5fd" stroke="#ffffff" opacity="1"/>
+<rect x="955.86" y="958.00" width="23.14" height="17.50" fill="#93c5fd" stroke="#ffffff" opacity="1"/>
+<rect x="138.14" y="870.50" width="972.00" height="17.50" fill="#ddd6fe" stroke="#ffffff" opacity="1"/>
+<rect x="161.29" y="853.00" width="948.86" height="17.50" fill="#c4b5fd" stroke="#ffffff" opacity="1"/>
+<rect x="655.00" y="783.00" width="300.86" height="17.50" fill="#fed7aa" stroke="#ffffff" opacity="1"/>
+<line x1="115.00" y1="756.75" x2="1195.00" y2="756.75" stroke="#dc2626" stroke-width="2" stroke-dasharray="7 4"/>
+<text x="1209.00" y="761.75" class="small" >UB limit: 248 KiB</text>
+<text x="169.00" y="866.75" class="label" >%alloc_9 + %alloc_65</text>
+<text x="169.00" y="884.25" class="label" >%alloc_7 + %alloc_64</text>
+<text x="400.43" y="980.50" class="label" >%alloc_28: 2 x 16 KiB</text>
+<text x="670.43" y="796.75" class="label" >%alloc_45: 16 KiB</text>
+<line x1="979.00" y1="975.50" x2="1203.00" y2="975.50" stroke="#2563eb" stroke-width="1.5" stroke-dasharray=""/>
+<text x="1209.00" y="969.50" class="small" >%alloc_69</text>
+<text x="1209.00" y="988.50" class="small" >2 x 16 KiB</text>
+<text x="1209.00" y="1007.50" class="small" >life [149,152]</text>
+<text x="115.00" y="1100.00" class="label" >%alloc_28 [72,118] and %alloc_69 [149,152] share [32,64) KiB.</text>
+<text x="40.00" y="1150.00" class="small" >Logged planner intervals are not a hardware concurrency trace. All addresses are relative to UB base.</text>
+</svg>
