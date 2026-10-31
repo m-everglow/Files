@@ -68,6 +68,7 @@ current：/home/m00953828/mojo/npu-ir/local-inplace/bin
 
 ```bash
 source /data/shared/cann/9.2.0.weekly.20260902/cann-9.2.0/set_env.sh
+unset BISHENG_INSTALL_PATH  # 若当前 shell 继承了旧值，先清除
 
 # 每个批次只选一个版本；下一批次再切换。
 export PATH=/home/m00953828/mojo/npu-ir/local-inplace/bin:$PATH
@@ -82,7 +83,7 @@ npu-smi info
 export ASCEND_RT_VISIBLE_DEVICES=6
 ```
 
-stable 批次对应改用 `/home/m00953828/mojo/npu-ir/stable/bin`。建议每批使用独立 shell 配置环境，避免多次追加 PATH 后混用组件。
+stable 批次对应改用 `/home/m00953828/mojo/npu-ir/stable/bin`。**不要 export `BISHENG_INSTALL_PATH`**；source CANN 后，只把所选版本的 `bin` 放到 `PATH` 最前面，并核对 `which bishengir-compile` 和 SHA256。旧 shell 若已有 `BISHENG_INSTALL_PATH`，先 `unset`。每批使用独立 shell，避免多次追加 PATH 后混用组件。
 
 旧smoke脚本还使用 `/home/m00953828/.venv/bin/activate`、测试仓库的 `PYTHONPATH` 及 `MOJO_Backend=ttx`。迁移时检查当前测试是否需要它们，保存 `which python`、`which pytest` 和Triton实际安装位置，不仅核对编译器PATH。
 
@@ -261,6 +262,34 @@ bishengir-opt before-planmemory.mlir \
 - DSATUR颜色不是物理地址。建图包含保守流水线冲突，低spec level仍可能允许图中有边的SE同址；不要用颜色数推算实际UB占用。
 - 解释性能因果时沿“SE顺序 → 地址复用对象 → 具体读写op/流水线 → 同步增删或位置 → 复测性能”逐步举证。相同峰值容量也可能有不同同步；静态生命期不重叠不代表异步load/store已完成。
 
+## 在 Triton 中替换指定 kernel 的 .o（2026-10-31）
+
+用于运行手工修改 IR 后重新编译的对象。先固定目标 kernel 的 autotune 配置，用实际编译命令生成配套 `.o`，保持函数入口、参数 ABI、grid、constexpr 和 tiling 与 Triton 本次调用一致。
+
+1. 备份实际安装的 `/usr/local/python3.11.15/lib/python3.11/site-packages/triton/backends/ascend/compiler.py`，记录 SHA256。在 `linalg_to_bin_enable_npu_compile_910_95` 最后的 `return Path(bin_path).read_bytes()` 处修改返回对象。
+2. **必须按目标 kernel 筛选**。一个 pytest 会调用多个 kernel，不能无条件返回同一个 `.o`。以下为 SWA forward 示例（函数内可直接使用现有的 `linalg` 输入）：
+
+```python
+        import re
+        kernel_names = re.findall(
+            r"func\.func\s+@([A-Za-z_][A-Za-z_0-9]*)\(", linalg)
+        is_target = "_swa_fwd_kernel" in kernel_names
+        print(f"[OBJECT_SELECT] target={is_target} kernels={kernel_names}", flush=True)
+        if is_target:
+            replacement_path = Path("/绝对路径/修改后重新编译的.o")
+            print(f"[OBJECT_REPLACED] {replacement_path}", flush=True)
+            return replacement_path.read_bytes()
+        return Path(bin_path).read_bytes()
+```
+
+3. source CANN 后，将所选 `bishengir-compile` 的 bin 放到 PATH 最前面；不 export `BISHENG_INSTALL_PATH`。使用新的独立 `TRITON_CACHE_DIR`，设置 `TRITON_DEBUG=1`，运行原 pytest 用例并保存日志。新缓存可确保走到修改的返回路径；无需同时强制每次重复编译。
+4. 检查日志：目标 kernel 出现替换标记，其他 kernel 显示 `target=False`；核对缓存中目标 `.npubin` 与指定 `.o` 的 SHA256，并确认 pytest 通过。**替换对象不要求与现场正常编译对象逐字节一致**，否则会阻止验证修改后的 IR。
+5. 用 `try/finally` 在正常、失败或超时退出后恢复 `compiler.py`，并核对恢复后的 SHA256。全局安装文件临时修改期间，避免其他实验同时使用该编译入口。日志、对象、缓存和脚本放在 mojo 实验目录，Files 只保留结论。
+
+已验证：BM=BN=128 的 `mojo_opset/tests/perf/test_attention_swa_mfu.py::test_swa_function_perf[False-4-1023-M_BF16_1024]`，物理卡5，**1 passed**。仅 `_swa_fwd_kernel` 替换；`_swa_bwd_preprocess`、`_swa_bwd_dkdv_kernel`、`_swa_bwd_dq_kernel` 均走原路径。此次使用未改动的基线对象，只证明替换流程可用，修改后对象仍需单独验证。
+
+复用脚本与证据：`/home/m00953828/mojo/ub_l1/swa_tiling_debug_archive_20261031/BM128_BN256/run_pytest_fwd_only_return_patch.py`、同名 `.sh`，以及 `pytest_fwd_only_card5/pytest.log`。运行前检查目标 kernel、对象路径、设备及缓存目录。
+
 ## 编译时长与阶段占比
 
 ### 三种时间不能混用
@@ -320,7 +349,9 @@ bishengir-opt before-planmemory.mlir \
 | 编译/IR证据 | bcmlir及配置映射、真实编译命令、完整all-ir、提取输入、PlanMemory前后IR、debug、GraphSyncSolver及必要的最终IR |
 | 进度与结论 | 已完成/运行中/中断/待补case，当前结论、证据边界、下一条待执行命令；缺失环境文件单列 |
 
-推荐每次在 `mojo_data/<任务名_日期>/` 下按 `stable/current → 批次 → case` 分目录，放一个README指向脚本和原始数据。Files中的分析文档和CSV记录来源路径；**迁移时连原始证据一起复制**，仅复制Markdown会留下失效绝对链接。巨大的cache可按对应case保留必要候选，但先列清单，未经确认不清理历史证据。
+**Files 目录只放汇总结论、分析文档和需要直接查看的精简 IR。**全量 IR 日志、bcmlir、cache、dump、compiler_temps、运行日志、原始 CSV/JSON 和复现实验脚本放在 `/home/m00953828/mojo/` 下的对应实验工作目录；分析文档写明证据的实际路径。已有临时产物也按此规则移出 Files，避免把 Files 当作调试归档目录。
+
+推荐每次在 `mojo_data/<任务名_日期>/` 下按 `stable/current → 批次 → case` 分目录，放一个README指向脚本和原始数据。Files中的分析文档和汇总CSV记录来源路径；**迁移时连原始证据一起复制**，仅复制Markdown会留下失效绝对链接。巨大的cache可按对应case保留必要候选，但先列清单，未经确认不清理历史证据。
 
 迁移后先核对SHA256、依赖和设备，再跑一个已知可复现case，确认kernel性能CSV与bcmlir都能得到，再恢复批量。恢复只跑缺失项，统计时排除中断重复项；不要自动安装/升级整套软件、改测试逻辑或覆盖基线。提交/push由用户决定，凭据不放脚本、日志或文档。
 
