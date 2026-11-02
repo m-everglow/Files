@@ -598,14 +598,18 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
         annotation.mark %alloc_5 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<3>, hivm.tiling_dim = 1 : index} : memref<16x8x16x16xbf16, #hivm.address_space<cbuf>>
         annotation.mark %alloc_4 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<0>, hivm.tiling_dim = 1 : index} : memref<16x8x16x16xbf16, #hivm.address_space<cbuf>>
         %alloc_7 = memref.alloc() : memref<64x256xf32, #hivm.address_space<ub>>
+        // QK 第 1 个 buffer：64 * 256 * 4 = 65536 B = 64 KiB。
         annotation.mark %alloc_7 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<1>, hivm.tiling_dim = 0 : index, tiledAlloc} : memref<64x256xf32, #hivm.address_space<ub>>
         %alloc_8 = memref.alloc() : memref<64x256xf32, #hivm.address_space<ub>>
+        // QK 第 2 个 buffer：64 KiB；%alloc_7 + %alloc_8 共 128 KiB。
         annotation.mark %alloc_8 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<5>, hivm.tiling_dim = 0 : index, tiledAlloc} : memref<64x256xf32, #hivm.address_space<ub>>
         hivm.hir.sync_block_set[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = 2
         hivm.hir.sync_block_set[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = 5
         %alloc_9 = memref.alloc() : memref<64x128xf32, #hivm.address_space<ub>>
+        // PV 第 1 个 buffer：64 * 128 * 4 = 32768 B = 32 KiB。
         annotation.mark %alloc_9 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<2>, hivm.tiling_dim = 0 : index, tiledAlloc} : memref<64x128xf32, #hivm.address_space<ub>>
         %alloc_10 = memref.alloc() : memref<64x128xf32, #hivm.address_space<ub>>
+        // PV 第 2 个 buffer：32 KiB；%alloc_9 + %alloc_10 共 64 KiB。
         annotation.mark %alloc_10 {effects = ["write", "read"], hivm.tightly_coupled_buffer = #hivm.tightly_coupled_buffer<4>, hivm.tiling_dim = 0 : index, tiledAlloc} : memref<64x128xf32, #hivm.address_space<ub>>
         hivm.hir.sync_block_set[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = 3
         hivm.hir.sync_block_set[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = 6
@@ -618,6 +622,7 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
         hivm.hir.sync_block_set[<VECTOR>, <PIPE_S>, <PIPE_S>] flag = 15
         %69 = arith.addi %56, %c2_i32 : i32
         %alloc_17 = memref.alloc() {alignment = 64 : i64} : memref<64x128xf32, #hivm.address_space<ub>>
+        // acc 累加结果：32 KiB，作为内层 for 的初始 %arg31；可与后面的 %alloc_33 复用，只计一份。
         func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_3(%alloc_17) {hivm.vector_function, no_inline} : (memref<64x128xf32, #hivm.address_space<ub>>) -> ()
         %alloc_18 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
         hivm.hir.copy ins(%alloc_0 : memref<64xf32, #hivm.address_space<ub>>) outs(%alloc_18 : memref<64xf32, #hivm.address_space<ub>>)
@@ -638,6 +643,22 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
           %115 = arith.cmpi slt, %arg32, %56 : i32
           %116 = arith.andi %111, %114 : i1
           %117 = arith.andi %116, %115 : i1
+          // V1：以下大小均按每 AIV 统计；列出当前块的读写，以及其他仍需保留的 buffer。
+          // GM load 到 UB：%arg22 -> %subview_33 -> %alloc_34，64x256xi8 = 16 KiB；由 VF0 读取。
+          // 紧耦合 UB（本块读取并修改）：%alloc_7 / %alloc_8，各 64 KiB；%130 按 %arg32 % 2 选择一份。
+          //   另一份可能已由 AIC 写入后续数据，不能因为本块没选中就认为空闲。
+          // 紧耦合 UB（本块不访问但可能共存）：%alloc_9 / %alloc_10，各 32 KiB；AIC 写入，后面的 V2 读取。
+          // 紧耦合 L1：%alloc_4 / %alloc_5，各 64 KiB；本块从 %alloc_39 复制到其中一份的本 AIV 切片（32 KiB）。
+          //   它们属于 L1，不计 UB；对应的 UB 源 %alloc_39 要保留到复制完成。
+          // VF 临时 UB：%alloc_35、%alloc_36、%alloc_38 各 256 B；%alloc_39 为 32.5 KiB。
+          //   VF0 写 %alloc_35；VF1 读 %arg29、%alloc_35、%130，写 %alloc_36、%alloc_37、%alloc_38、%alloc_39。
+          //   %alloc_36 / %alloc_38 复制到下面的三槽 buffer 后可释放；%alloc_37 还要传给后续 V1。
+          // SSBUF 调度引入的 VECTOR 核内 UB：%alloc_11/12/13 和 %alloc_14/15/16，两组三槽，各槽 256 B，共 1.5 KiB。
+          //   本块按 %arg32 % 3 选择一槽：将 %alloc_36 写入前一组，将 %alloc_38 写入后一组，留给 V2。
+          // 循环携带的 UB：%arg29 为 256 B，本块读旧值并通过 %alloc_37 返回新值。
+          //   %arg30 为 256 B、%arg31 为 32 KiB，本块不访问，但后面的 V2 还要读取，不能覆盖。
+          // 其他保留的 UB：%alloc / %alloc_0 各 256 B，后续外层迭代还要用作初始化源。
+          // 以上按用途分类，不表示所有 alloc 大小可以直接相加；别名、原地复用和最后一次访问需另行判断。
           %118:4 = scf.if %117 -> (memref<64xf32, #hivm.address_space<ub>>, i32, i32, i32) {
             %128 = arith.remsi %arg32, %c2_i32 : i32
             %129 = arith.cmpi eq, %128, %c0_i32 : i32
@@ -683,6 +704,28 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
             %alloc_39 = memref.alloc() : memref<16x65x16x1xbf16, #hivm.address_space<ub>>
             %subview_40 = memref.subview %alloc_39[0, 0, 0, 0] [16, 64, 16, 1] [1, 1, 1, 1] : memref<16x65x16x1xbf16, #hivm.address_space<ub>> to memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>
             func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_1(%arg29, %alloc_35, %alloc_36, %alloc_37, %130, %alloc_38, %subview_40) {hivm.vector_function, no_inline} : (memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>) -> ()
+            // 本次 VF 调用的输入：%arg29、%alloc_35、%130。只读取它们，不修改它们。
+            // 本次 VF 调用的输出：%alloc_36、%alloc_37、%alloc_38、%subview_40。
+            // %subview_40 使用 %alloc_39 的空间；%alloc_39 分配 32.5 KiB，其中有效数据 32 KiB。
+            //
+            // VF 先读取完整的 %arg29、%alloc_35，计算并写入 %alloc_37、%alloc_36。
+            // 随后逐行读取 %130，计算并写入 %subview_40；每行的求和结果写入 %alloc_38。
+            // 所以，读取 %130 尚未结束时，%alloc_39 中已经开始保存输出，不能简单让两者同址。
+            //
+            // 执行这个 VF 时，还要考虑下面几块大 buffer，不能只统计它的输入和输出：
+            // 1. %130 选择 %alloc_7 / %alloc_8 中的一份（64 KiB）；另一份可能已被 AIC 写入后续数据。
+            //    当前一份还没读完，另一份又要留给后续使用，因此两份共计 128 KiB。
+            // 2. %alloc_9 / %alloc_10 各 32 KiB：一份可能已写好、等待后面的 V2 读取，另一份也可能被 AIC 写好。
+            //    它们不是本 VF 的输入，但此时不能覆盖，合计 64 KiB。
+            // 3. %arg31 为 32 KiB：本 VF 不读取它，但后面的 V2 还要读取，必须保留。
+            //    %alloc_17 / %alloc_33 可与它使用同一份空间，这里只计一次。
+            // 4. 本 VF 正在产生的 %alloc_39：先只计 32 KiB 有效数据。
+            //
+            // 上面四项先按不共享空间相加：128 + 64 + 32 + 32 = 256 KiB。
+            // 这个数没有计小向量和 %alloc_39 的 0.5 KiB padding，也没有扣除部分重叠。
+            // 按当前逐段读写顺序，%alloc_39 与 %130 最多可共享 3008 B，不能覆盖尚未读取的输入。
+            // 因而之前的计算为：256 - 3008 / 1024 = 253.0625（单位 KiB），仍超过每 AIV 的 248 KiB。
+            // 这不是 PlanMemory 的实际分配结果；改变 VF 读写顺序或同步后，需要重新计算。
             %expand_shape = memref.expand_shape %subview_40 [[0], [1, 2], [3]] output_shape [16, 4, 16, 16] : memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>> into memref<16x4x16x16xbf16, strided<[1040, 256, 16, 1]>, #hivm.address_space<ub>>
             scf.if %129 {
               hivm.hir.sync_block_wait[<VECTOR>, <PIPE_MTE1>, <PIPE_MTE3>] flag = 1
@@ -738,6 +781,23 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
           %124 = arith.cmpi slt, %arg33, %56 : i32
           %125 = arith.andi %120, %123 : i1
           %126 = arith.andi %125, %124 : i1
+          // V2：以下大小均按每 AIV 统计。
+          // GM load 到 UB：无。本块使用的数据已由 AIC、V1 或前一轮 V2 写入 UB。
+          // 紧耦合 UB（本块读取）：%alloc_9 / %alloc_10，各 32 KiB；%133 按 %arg33 % 2 选择一份。
+          //   读取前等待对应 FIX -> V flag，读取完成后通过 V -> FIX flag 允许 AIC 再写该槽。
+          //   另一份可能保存后续数据，不能随当前一份一起覆盖。
+          // 紧耦合 UB（本块不访问但可能共存）：%alloc_7 / %alloc_8，各 64 KiB；后续 V1 可能还要读取。
+          // 紧耦合 L1：%alloc_4 / %alloc_5 不在本块访问，也不计 UB。
+          // VF 输出 UB：%alloc_32 为 256 B，%alloc_33 为 32 KiB；两者都通过 loop yield 留给后续 V2，不是调用后就可释放的临时值。
+          //   VF 读 %arg30、%132#1、%132#0、%133、%arg31，写 %alloc_32、%alloc_33；%132#1 在调用中传入两次。
+          //   %alloc_32 可覆盖旧 %arg30，%alloc_33 可覆盖旧 %arg31，计算空间时不要把这两对重复计入。
+          // SSBUF 调度引入的 VECTOR 核内 UB：%alloc_11/12/13 和 %alloc_14/15/16，两组三槽，各槽 256 B，共 1.5 KiB。
+          //   本块按 %arg33 % 3 选择：%132#1 来自 %alloc_11/12/13，%132#0 来自 %alloc_14/15/16。
+          //   当前槽读完后才可重写；其他槽可能仍保存尚未消费的 V1 输出。
+          // 循环携带的 UB：%arg30 为 256 B、%arg31 为 32 KiB，本块读取旧值并返回更新值。
+          //   V1 产生的 %118#0 为 256 B，本块不访问，但下一轮 V1 或尾部 VF 还要读取，不能覆盖。
+          // V1 临时 UB：本块不直接使用 %alloc_34/35/36/38/39；其中 %alloc_39 仍需等 UB -> L1 复制读完才能复用。
+          // 其他保留的 UB：%alloc / %alloc_0 各 256 B，后续外层迭代还要用作初始化源。
           %127:5 = scf.if %126 -> (memref<64xf32, #hivm.address_space<ub>>, memref<64x128xf32, #hivm.address_space<ub>>, i32, i32, i32) {
             %128 = arith.remsi %arg33, %c2_i32 : i32
             %129 = arith.cmpi eq, %128, %c0_i32 : i32
@@ -759,6 +819,7 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
             }
             %alloc_32 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_33 = memref.alloc() {alignment = 64 : i64} : memref<64x128xf32, #hivm.address_space<ub>>
+            // 新累加结果：32 KiB；可原地覆盖 %arg31，与 %alloc_17 合并计一份，不再另加 32 KiB。
             func.call @_swa_fwd_kernel_mix_aiv_fused_2_outlined_merged_vf_0(%arg30, %132#1, %132#0, %alloc_32, %132#1, %133, %arg31, %alloc_33) {hivm.vector_function, no_inline, ptc_simdvf} : (memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64x128xf32, #hivm.address_space<ub>>, memref<64x128xf32, #hivm.address_space<ub>>, memref<64x128xf32, #hivm.address_space<ub>>) -> ()
             scf.if %129 {
               hivm.hir.sync_block_set[<VECTOR>, <PIPE_V>, <PIPE_FIX>] flag = 3
