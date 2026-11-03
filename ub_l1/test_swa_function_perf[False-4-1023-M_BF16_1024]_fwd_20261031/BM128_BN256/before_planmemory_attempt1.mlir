@@ -697,37 +697,50 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
             annotation.mark %alloc_34 {hivm.skip_stride_align_for_vload = #hivm.skip_stride_align_for_vload} : memref<64x256xi8, #hivm.address_space<ub>>
             hivm.hir.load ins(%subview_33 : memref<64x256xi8, strided<[2816, 1], offset: ?>, #hivm.address_space<gm>>) outs(%alloc_34 : memref<64x256xi8, #hivm.address_space<ub>>) eviction_policy = <EvictFirst> core_type = <VECTOR>
             %alloc_35 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
-            // TODO 输入输出
+            // VF0 输入：
+            //   %alloc_34：64x256xi8，16 KiB，从 GM load 的 mask，读完后不再使用。
+            //   %130：64x256xf32，64 KiB，由 %alloc_7 / %alloc_8 选出当前槽。
+            //   %arg10：f32 缩放系数，不占 UB buffer。
+            // VF0 输出：
+            //   %130：64x256xf32，64 KiB；mask 非零时写入原值 * %arg10，否则写入 -1e6。
+            //   %alloc_35：64xf32，256 B，更新后 %130 的每行最大值。
+            //     IR 中有读取旧 %alloc_35 的操作；归约带 withoutInitMergeOp，Triton 降低时不合入旧值。
+            
+            // 原地复用情况（按现有读写顺序，不以 PlanMemory 规则为依据）：
+            //   输出 %130 复用输入 %130：可以，当前调用已经这样做。每次先读 64 个 f32，再写回原位置。
+            //   输出 %130 复用 %alloc_34：不能直接同址，64 KiB 输出放不进 16 KiB 空间，且会覆盖未读 mask。
+            //   %alloc_35 复用 %130：不能。VF1 还要读取完整的更新后 %130，行最大值会破坏它。
+            //   %alloc_35 复用 %alloc_34 的前 256 B：从读写顺序看可以；每行 mask 读完才写行最大值，
+            //     写入位置始终落在已读完的 mask 范围内，VF0 之后也不再读取 mask。
+            //     仍需保证 GM->UB load 完成后才覆盖，并满足分配地址的对齐要求。
+            // 当前 IR 仅实现 %130 自身的原地更新；%alloc_35 与 %alloc_34 仍是独立分配。
             func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_0(%alloc_34, %130, %arg10, %alloc_35, %130) {hivm.vector_function, no_inline} : (memref<64x256xi8, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>, f32, memref<64xf32, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>) -> ()
             %alloc_36 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_37 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_38 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_39 = memref.alloc() : memref<16x65x16x1xbf16, #hivm.address_space<ub>>
             %subview_40 = memref.subview %alloc_39[0, 0, 0, 0] [16, 64, 16, 1] [1, 1, 1, 1] : memref<16x65x16x1xbf16, #hivm.address_space<ub>> to memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>
-            // TODO 核间buffer为什么不能和本地buffer复用
             func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_1(%arg29, %alloc_35, %alloc_36, %alloc_37, %130, %alloc_38, %subview_40) {hivm.vector_function, no_inline} : (memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>) -> ()
-            // 本次 VF 调用的输入：%arg29、%alloc_35、%130。只读取它们，不修改它们。
-            // 本次 VF 调用的输出：%alloc_36、%alloc_37、%alloc_38、%subview_40。
-            // %subview_40 使用 %alloc_39 的空间；%alloc_39 分配 32.5 KiB，其中有效数据 32 KiB。
-            //
-            // VF 先读取完整的 %arg29、%alloc_35，计算并写入 %alloc_37、%alloc_36。
-            // 随后逐行读取 %130，计算并写入 %subview_40；每行的求和结果写入 %alloc_38。
-            // 所以，读取 %130 尚未结束时，%alloc_39 中已经开始保存输出，不能简单让两者同址。
-            //
-            // 执行这个 VF 时，还要考虑下面几块大 buffer，不能只统计它的输入和输出：
-            // 1. %130 选择 %alloc_7 / %alloc_8 中的一份（64 KiB）；另一份可能已被 AIC 写入后续数据。
-            //    当前一份还没读完，另一份又要留给后续使用，因此两份共计 128 KiB。
-            // 2. %alloc_9 / %alloc_10 各 32 KiB：一份可能已写好、等待后面的 V2 读取，另一份也可能被 AIC 写好。
-            //    它们不是本 VF 的输入，但此时不能覆盖，合计 64 KiB。
-            // 3. %arg31 为 32 KiB：本 VF 不读取它，但后面的 V2 还要读取，必须保留。
-            //    %alloc_17 / %alloc_33 可与它使用同一份空间，这里只计一次。
-            // 4. 本 VF 正在产生的 %alloc_39：先只计 32 KiB 有效数据。
-            //
-            // 上面四项先按不共享空间相加：128 + 64 + 32 + 32 = 256 KiB。
-            // 这个数没有计小向量和 %alloc_39 的 0.5 KiB padding，也没有扣除部分重叠。
-            // 按当前逐段读写顺序，%alloc_39 与 %130 最多可共享 3008 B，不能覆盖尚未读取的输入。
-            // 因而之前的计算为：256 - 3008 / 1024 = 253.0625（单位 KiB），仍超过每 AIV 的 248 KiB。
-            // 这不是 PlanMemory 的实际分配结果；改变 VF 读写顺序或同步后，需要重新计算。
+            // VF1 输入：
+            //   %arg29：64xf32，256 B；
+            //   %alloc_35：64xf32，256 B；
+            //   %130：64x256xf32，64 KiB，由 %alloc_7 / %alloc_8 (qk) 选出当前槽。
+            // VF1 输出：
+            //   %alloc_36：64xf32，256 B，exp(%arg29 - %alloc_37)。
+            //   %alloc_37：64xf32，256 B，maximum(%arg29, %alloc_35)，作为循环下一轮的值。
+            //   %alloc_38：64xf32，256 B，每行 exp(%130 - %alloc_37) 的和。
+            //     IR 中有读取旧 %alloc_38 的操作；归约带 withoutInitMergeOp，Triton 降低时不合入旧值。
+            //   %subview_40：上述 exp 结果转 bf16，写入 %alloc_39；
+            //     %alloc_39 共 32.5 KiB，有效数据 32 KiB，输出按 [16,64,16] 布局写入。
+
+            // 原地复用 %130 的判断（按本 VF 的现有读写顺序，不以 PlanMemory 规则为依据）：
+            //   %alloc_36、%alloc_37：不能。它们在读取 %130 之前写出，同址会覆盖尚未读取的数据。
+            //   %alloc_39：不能直接与 %130 同址。输出按列块分散写入，会覆盖后续行尚未读取的输入。
+            //   %alloc_38：VF 内部可以放在 %130 的前 256 B；每行读完才写该行的和，不会覆盖未读输入。
+            //     但当前 V->FIX 的 set(flag=2/5) 早于 %alloc_38 向 %alloc_14/15/16 的 copy。
+            //     若复用，必须等这条 copy 完成后再发该 set，否则 C1 可能覆盖尚未取走的行和。
+            // %130 在 wait(FIX->V) 后、set(V->FIX) 前由 V1 使用；核间 buffer 的身份本身不禁止复用。
+            // 这里只说明可行条件，当前 IR 尚未修改地址或同步，不能视为已经实现了上述复用。
             %expand_shape = memref.expand_shape %subview_40 [[0], [1, 2], [3]] output_shape [16, 4, 16, 16] : memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>> into memref<16x4x16x16xbf16, strided<[1040, 256, 16, 1]>, #hivm.address_space<ub>>
             scf.if %129 {
               hivm.hir.sync_block_wait[<VECTOR>, <PIPE_MTE1>, <PIPE_MTE3>] flag = 1
