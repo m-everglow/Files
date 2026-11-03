@@ -697,12 +697,14 @@ module attributes {dlti.target_system_spec = #dlti.target_system_spec<"NPU" : #h
             annotation.mark %alloc_34 {hivm.skip_stride_align_for_vload = #hivm.skip_stride_align_for_vload} : memref<64x256xi8, #hivm.address_space<ub>>
             hivm.hir.load ins(%subview_33 : memref<64x256xi8, strided<[2816, 1], offset: ?>, #hivm.address_space<gm>>) outs(%alloc_34 : memref<64x256xi8, #hivm.address_space<ub>>) eviction_policy = <EvictFirst> core_type = <VECTOR>
             %alloc_35 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
+            // TODO 输入输出
             func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_0(%alloc_34, %130, %arg10, %alloc_35, %130) {hivm.vector_function, no_inline} : (memref<64x256xi8, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>, f32, memref<64xf32, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>) -> ()
             %alloc_36 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_37 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_38 = memref.alloc() {alignment = 64 : i64} : memref<64xf32, #hivm.address_space<ub>>
             %alloc_39 = memref.alloc() : memref<16x65x16x1xbf16, #hivm.address_space<ub>>
             %subview_40 = memref.subview %alloc_39[0, 0, 0, 0] [16, 64, 16, 1] [1, 1, 1, 1] : memref<16x65x16x1xbf16, #hivm.address_space<ub>> to memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>
+            // TODO 核间buffer为什么不能和本地buffer复用
             func.call @_swa_fwd_kernel_mix_aiv_outlined_vf_1(%arg29, %alloc_35, %alloc_36, %alloc_37, %130, %alloc_38, %subview_40) {hivm.vector_function, no_inline} : (memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<64x256xf32, #hivm.address_space<ub>>, memref<64xf32, #hivm.address_space<ub>>, memref<16x64x16xbf16, strided<[1040, 16, 1]>, #hivm.address_space<ub>>) -> ()
             // 本次 VF 调用的输入：%arg29、%alloc_35、%130。只读取它们，不修改它们。
             // 本次 VF 调用的输出：%alloc_36、%alloc_37、%alloc_38、%subview_40。
