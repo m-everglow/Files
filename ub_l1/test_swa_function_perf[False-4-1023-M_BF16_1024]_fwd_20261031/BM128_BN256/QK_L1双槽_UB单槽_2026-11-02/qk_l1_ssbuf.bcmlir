@@ -710,6 +710,11 @@ module attributes {hacc.target = #hacc.target<"Ascend950PR_9579">} {
           %qk_has_both = arith.andi %qk_has0, %qk_has1 : i1
           %qk_free_both = arith.andi %qk_free0, %qk_free1 : i1
           %qk_can_transfer = arith.andi %qk_has_both, %qk_free_both : i1
+          // if（AIV0 的 L1 待搬计数 > 0
+          //   && AIV1 的 L1 待搬计数 > 0
+          //   && AIV0 的 UB 占用计数 == 0
+          //   && AIV1 的 UB 占用计数 == 0）
+          //       按搬运次数的奇偶，选择 L1 槽0或槽1，copy 到 UB
           %qk_copy_next = scf.if %qk_can_transfer -> (i32) {
             %qk_slot = arith.remsi %qk_copy_iter, %c2_i32 : i32
             %qk_even = arith.cmpi eq, %qk_slot, %c0_i32 : i32
